@@ -1,0 +1,50 @@
+from twitchAPI.helper import first
+from InstanceContainer import InstanceContainer
+import os
+from dotenv import load_dotenv; load_dotenv()
+import re
+from enums import PRIORITY_QUEUE_PRIORITIES
+
+async def ban_user_via_username(username, seconds = 30, reason = 'unknown reason'):
+  print(f'[PYTWITCHAPI] attempting to ban the user called: {username} for {f"{seconds}s" if seconds is not None else "indefinitely"}')
+  user_to_ban = await first(InstanceContainer.twitch.get_users(logins=[username.strip()]))
+  print(f'user_to_ban={user_to_ban}, id={user_to_ban.id}, reason={reason}, seconds={seconds}')
+  if user_to_ban:
+    try:
+      await InstanceContainer.twitch.ban_user(
+        os.environ['TWITCH_CHANNEL_ID'],
+        os.environ['TWITCH_CHANNEL_ID'],
+        user_to_ban.id,
+        reason,
+        seconds
+      )
+    except Exception as e:
+      print(f"[ERROR] Failed to ban user: {e}")
+      print(await InstanceContainer.twitch.validate_token())
+
+# Assisted with basic coding tools
+def is_valid_scrabble_tile(s):
+  # Define the regular expression pattern
+  # ^[A-O]       : The string must start with a letter between A and O
+  # (1[0-5]|[1-9])$: Followed by a number from 1 to 15. This part matches either 10-15 (1[0-5]) or 1-9 ([1-9])
+  pattern = r'^[a-o](1[0-5]|[1-9])$'
+  
+  # Use re.match to check if the entire string matches the pattern
+  match = re.match(pattern, s)
+  
+  # Return True if the string matches the pattern, False otherwise
+  return bool(match)
+
+bot_phrases = ['dotcom', '.com', 'promo', 'channel', 'view', 'follow', 'competit', 'streamrise', 'http', 'discord']
+def is_twitch_message_bot_spam(s):
+  processed_s = s.lower().replace(' ', '')
+  return any(i in processed_s for i in bot_phrases) and not '!discord' in processed_s
+
+def send_ban_user_via_username_event_to_priority_queue(username, seconds, reason = ''):
+  prompt = f'Announce that you\'ve just {"timed out" if seconds else "banned"} {username} for {f"{seconds} seconds" if seconds else ""} for {reason}'
+  InstanceContainer.priority_queue.enqueue(
+    prompt=prompt,
+    priority=PRIORITY_QUEUE_PRIORITIES['PRIORITY_BAN_USER'],
+    username_to_ban=username,
+    pytwitchapi_args={ 'ban_seconds': seconds, 'ban_reason': reason }
+  )

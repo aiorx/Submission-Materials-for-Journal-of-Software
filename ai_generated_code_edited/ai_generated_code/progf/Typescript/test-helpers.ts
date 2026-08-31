@@ -1,0 +1,177 @@
+// Assisted using common GitHub development utilities
+// Essential test helper functions for PrismWeave browser extension tests
+
+/**
+ * Mock Chrome APIs for testing
+ */
+export function mockChromeAPIs() {
+  const mockStorage = {
+    get: jest.fn().mockImplementation((keys, callback) => {
+      if (callback) callback({});
+      return Promise.resolve({});
+    }),
+    set: jest.fn().mockImplementation((data, callback) => {
+      if (callback) callback();
+      return Promise.resolve();
+    }),
+    remove: jest.fn().mockImplementation((keys, callback) => {
+      if (callback) callback();
+      return Promise.resolve();
+    }),
+  };
+
+  const mockRuntime = {
+    sendMessage: jest.fn().mockImplementation((message, callback) => {
+      if (callback) callback({ success: true });
+      return Promise.resolve({ success: true });
+    }),
+    onMessage: {
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+    },
+    lastError: null,
+    getManifest: jest.fn().mockReturnValue({ version: '1.0.0' }),
+  };
+
+  const mockTabs = {
+    query: jest.fn().mockImplementation((queryInfo, callback) => {
+      const mockTabs = [{ id: 1, url: 'https://example.com', title: 'Test Page' }];
+      if (callback) callback(mockTabs);
+      return Promise.resolve(mockTabs);
+    }),
+    sendMessage: jest.fn().mockImplementation((tabId, message, callback) => {
+      if (callback) callback({ success: true });
+      return Promise.resolve({ success: true });
+    }),
+  };
+
+  const mockChrome = {
+    storage: {
+      sync: mockStorage,
+      local: mockStorage,
+    },
+    runtime: mockRuntime,
+    tabs: mockTabs,
+  };
+
+  (global as any).chrome = mockChrome;
+
+  return mockChrome;
+}
+
+/**
+ * Setup DOM environment for testing
+ */
+export function setupDOM(htmlContent?: string): void {
+  // Create basic DOM structure
+  document.head.innerHTML = '';
+  document.body.innerHTML = '';
+
+  // Add meta viewport for responsive testing
+  const viewport = document.createElement('meta');
+  viewport.name = 'viewport';
+  viewport.content = 'width=device-width, initial-scale=1';
+  document.head.appendChild(viewport);
+
+  // Set body content if provided
+  if (htmlContent) {
+    document.body.innerHTML = htmlContent;
+  }
+}
+
+/**
+ * Create test HTML content
+ */
+export function createTestHTML(contentType: string = ''): string {
+  switch (contentType) {
+    case 'article':
+      return `
+        <article>
+          <header>
+            <h1>Understanding Modern Web Development - Complete Guide</h1>
+            <meta property="og:title" content="Understanding Modern Web Development - Complete Guide">
+            <meta name="author" content="Jane Developer">
+          </header>
+          <div class="content">
+            <p>Understanding Modern Web Development</p>
+            <p>Modern web development has evolved significantly over the past decade.</p>
+            <p>This comprehensive guide covers all the essential concepts.</p>
+          </div>
+        </article>
+      `;
+    case 'blog':
+      return `
+        <div class="blog-post">
+          <h1>10 Tips for Better Code Reviews</h1>
+          <div class="post-content">
+            <p>10 Tips for Better Code Reviews</p>
+            <p>Code reviews are an essential part of the development process.</p>
+            <p>Here are ten tips to make your code reviews more effective.</p>
+          </div>
+        </div>
+      `;
+    case 'generic':
+      return `
+        <div class="page">
+          <div class="header">Header content</div>
+          <div class="sidebar">Sidebar content</div>
+          <div class="main">
+            <p>This page has scattered content across multiple sections.</p>
+            <p>It's designed to test content extraction algorithms.</p>
+          </div>
+          <div class="footer">Footer content</div>
+        </div>
+      `;
+    case 'malformed':
+      return `
+        <div class="content">
+          <p>Content with unclosed tags and malformed HTML.
+          <div>Unclosed div
+          <span>Unclosed span
+          <p>Another paragraph without proper closing
+        </div>
+      `;
+    default:
+      return `
+        <article>
+          <h1>Test Article Title</h1>
+          <p>This is a test paragraph with some content.</p>
+          <p>This is another paragraph for testing.</p>
+          <ul>
+            <li>Test list item 1</li>
+            <li>Test list item 2</li>
+          </ul>
+        </article>
+      `;
+  }
+}
+
+/**
+ * Cleanup test environment
+ */
+export function cleanupTest(): void {
+  // Clear DOM
+  if (typeof document !== 'undefined') {
+    document.head.innerHTML = '';
+    document.body.innerHTML = '';
+  }
+
+  // Clear Chrome mocks
+  if ((global as any).chrome) {
+    delete (global as any).chrome;
+  }
+
+  // Clear any timers
+  jest.clearAllTimers();
+
+  // Clear all mocks
+  jest.clearAllMocks();
+}
+
+// Default export for CommonJS compatibility
+export default {
+  mockChromeAPIs,
+  setupDOM,
+  createTestHTML,
+  cleanupTest,
+};

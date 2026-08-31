@@ -1,0 +1,309 @@
+from collections import defaultdict, deque
+from typing import Dict, Tuple, Optional, List
+
+import streamlit as st
+from pokemontcgsdk import Card
+
+from utils.storage import remove_one_card_from_collection
+
+
+# Code Produced with third-party coding tools's ChatGPT o1-preview
+def group_evolution_families(pokemon: dict[str, tuple[Card, int]]) -> dict[str, list[tuple[Card, int]]]:
+    """
+    Group Pokémon cards into evolution families. An evolution family is a group of Pokémon cards that are related
+    by evolution. The cards are sorted by their evolution stages.
+
+    This function uses a graph-based approach to find connected components in the evolution graph.
+
+    :param pokemon: A dictionary of Pokémon cards with their quantities.
+    :return:      A dictionary of evolution families with their cards.
+    """
+    # Step 1: Build a mapping from card names to card IDs
+    name_to_card_ids = defaultdict(list)
+    for card_id, (card, qty) in pokemon.items():
+        name_to_card_ids[card.name].append(card_id)
+
+    # Step 2: Build an undirected graph where nodes are card IDs
+    graph = {card_id: set() for card_id in pokemon}
+    for card_id, (card, qty) in pokemon.items():
+        if card.evolvesFrom:
+            evolves_from_name = card.evolvesFrom
+            # Connect current card to all cards it evolves from
+            for parent_card_id in name_to_card_ids.get(evolves_from_name, []):
+                graph[card_id].add(parent_card_id)
+                graph[parent_card_id].add(card_id)
+
+    # Step 3: Find connected components in the graph
+    visited = set()
+    components = []
+    for card_id in graph:
+        if card_id not in visited:
+            stack = [card_id]
+            component = []
+            while stack:
+                current_id = stack.pop()
+                if current_id not in visited:
+                    visited.add(current_id)
+                    component.append(current_id)
+                    stack.extend(graph[current_id] - visited)
+            components.append(component)
+
+    # Step 4: Group cards into evolution families and sort them by evolution stages
+    evolution_families = {}
+    for component in components:
+        family_card_ids = component
+
+        # Build a mapping from card_id to its children within the family
+        children = {card_id: [] for card_id in family_card_ids}
+        for card_id in family_card_ids:
+            card, qty = pokemon[card_id]
+            if card.evolvesFrom:
+                evolves_from_name = card.evolvesFrom
+                # Connect current card to its parent(s) within the family
+                for parent_card_id in name_to_card_ids.get(evolves_from_name, []):
+                    if parent_card_id in family_card_ids:
+                        children[parent_card_id].append(card_id)
+
+        # Find roots (basic Pokémon)
+        roots = []
+        for card_id in family_card_ids:
+            card = pokemon[card_id][0]
+            if not card.evolvesFrom or not any(
+                    parent_card_id in family_card_ids for parent_card_id in name_to_card_ids.get(card.evolvesFrom, [])
+            ):
+                roots.append(card_id)
+
+        # Assign levels using BFS
+        queue = deque([(card_id, 0) for card_id in roots])
+        card_levels = {}  # card_id -> level
+        visited_levels = set()
+        while queue:
+            card_id, level = queue.popleft()
+            if card_id in visited_levels:
+                continue
+            visited_levels.add(card_id)
+            card_levels[card_id] = level
+            for child_id in children[card_id]:
+                queue.append((child_id, level + 1))
+
+        # Sort the cards by their levels
+        sorted_card_ids = sorted(card_levels, key=lambda x: card_levels[x])
+
+        # Gather the sorted cards
+        family_cards = [(pokemon[card_id][0], pokemon[card_id][1]) for card_id in sorted_card_ids]
+
+        # Attempt to find a basic Pokémon to name the family
+        basic_cards = [pokemon[card_id][0] for card_id in roots]
+        if basic_cards:
+            family_name = basic_cards[0].name
+        else:
+            # Use the first card's name if no basic Pokémon is found
+            family_name = family_cards[0][0].name
+        # Ensure the family name is unique
+        original_family_name = family_name
+        index = 1
+        while family_name in evolution_families:
+            family_name = f"{original_family_name}_{index}"
+            index += 1
+        evolution_families[family_name] = family_cards
+
+    return evolution_families
+
+
+def sort_cards(cards_dict: Dict[str, Tuple[Card, int]]) -> List[Tuple[Card, int]]:
+    """
+    Sorts cards based on predefined criteria:
+    - Pokémon are grouped by evolution families and sorted by type.
+    - Trainers are sorted by subtype order.
+    - Energies are sorted with special energies first.
+
+    Args:
+        cards_dict (Dict[str, Tuple[Card, int]]): Dictionary of card IDs to tuples of Card objects and quantities.
+
+    Returns:
+        List[Tuple[Card, int]]: A list of tuples containing Card objects and quantities, sorted accordingly.
+    """
+    type_sort_order = [
+        "Colorless",
+        "Darkness",
+        "Dragon",
+        "Fairy",
+        "Fighting",
+        "Fire",
+        "Grass",
+        "Lightning",
+        "Metal",
+        "Psychic",
+        "Water",
+    ]
+
+    def get_type_index(c: Card) -> int:
+        """
+        Helper function to get the index of a card's type in the type_sort_order list.
+
+        Args:
+            c (Card): The card to get the type index for.
+
+        Returns:
+            int: The index of the card's type, or a large number if not found.
+        """
+        if c.types and c.types[0] in type_sort_order:
+            return type_sort_order.index(c.types[0])
+        return len(type_sort_order)  # Place unknown types at the end
+
+    # Separate Pokémon, Trainers, and Energies
+    pokemon = {k: v for k, v in cards_dict.items() if v[0].supertype == "Pokémon"}
+    trainers = {k: v for k, v in cards_dict.items() if v[0].supertype == "Trainer"}
+    energies = {k: v for k, v in cards_dict.items() if v[0].supertype == "Energy"}
+
+    # Group Pokémon by evolution family
+    evolution_families = group_evolution_families(pokemon)
+
+    # Sort Pokémon families by type
+    sorted_pokemon = []
+    for family_name, family_cards in sorted(
+            evolution_families.items(),
+            key=lambda x: get_type_index(x[1][0][0]),  # Use the type of the first card in the family
+    ):
+        sorted_pokemon.extend(family_cards)
+
+    # Sort Trainers
+    trainer_sort_order = ["Item", "Tool", "Supporter", "Stadium"]
+    sorted_trainers = sorted(
+        trainers.values(),
+        key=lambda c: trainer_sort_order.index(c[0].subtypes[0])
+        if c[0].subtypes and c[0].subtypes[0] in trainer_sort_order
+        else float("inf"),
+    )
+
+    # Sort Energies
+    sorted_energies = sorted(
+        energies.values(),
+        key=lambda c: 0 if c[0].subtypes and "Special" in c[0].subtypes else 1,  # Special energies first
+    )
+
+    # Combine sorted cards
+    return sorted_pokemon + sorted_trainers + sorted_energies
+
+
+def view_collection(cards_dict: Dict[str, Tuple[Card, int]]) -> None:
+    """
+    Displays a collection of cards, allowing the user to remove cards from the collection.
+
+    Args:
+        cards_dict (Dict[str, Tuple[Card, int]]): Dictionary of card IDs to tuples of Card objects and quantities.
+    """
+    sorted_cards = sort_cards(cards_dict)
+    num_columns = 5
+    columns = st.columns(num_columns)
+    for idx, (card, quantity) in enumerate(sorted_cards):
+        with columns[idx % num_columns]:
+            st.image(card.images.large, use_container_width=True)
+            button = st.button(
+                f"Remove ({quantity} left)",
+                key=f"remove_{card.id}_{idx}",
+                use_container_width=True
+            )
+            if button:
+                remove_one_card_from_collection(card.id, st.session_state["name"])
+                st.session_state.cards[card.id] = (card, quantity - 1)
+                if quantity > 1:
+                    st.session_state.cards[card.id] = (card, quantity - 1)
+                else:
+                    st.session_state.cards.pop(card.id)
+                st.toast(f"Successfully removed 1 x '{card.name}'")
+                st.rerun()
+
+
+def render_sidebar(cards_dict: Dict[str, Tuple[Card, int]]) -> Optional[Dict[str, Tuple[Card, int]]]:
+    """
+    Renders the sidebar filters and applies them to the cards dictionary.
+
+    Args:
+        cards_dict (Dict[str, Tuple[Card, int]]): The original dictionary of cards.
+
+    Returns:
+        Optional[Dict[str, Tuple[Card, int]]]: The filtered dictionary of cards, or None if no cards match.
+    """
+    st.sidebar.header("Filter Options")
+
+    # Filter by Rulebox
+    non_rulebox = st.sidebar.checkbox("Non-Rulebox Cards Only", value=False)
+    if non_rulebox:
+        cards_dict = {
+            k: v for k, v in cards_dict.items() if not getattr(v[0], "rules", None)
+        }
+
+    # Filter by Supertype
+    supertypes = ["Trainer", "Energy", "Pokémon"]
+    selected_supertypes = st.sidebar.multiselect(
+        "Filter by Supertype", options=supertypes, default=[]
+    )
+    if selected_supertypes:
+        cards_dict = {
+            k: v for k, v in cards_dict.items() if v[0].supertype in selected_supertypes
+        }
+
+    # Filter by Pokémon Type (applies only to Pokémon cards)
+    if "Pokémon" in selected_supertypes or not selected_supertypes:
+        pokemon_types = [
+            "Colorless",
+            "Darkness",
+            "Dragon",
+            "Fairy",
+            "Fighting",
+            "Fire",
+            "Grass",
+            "Lightning",
+            "Metal",
+            "Psychic",
+            "Water",
+        ]
+        selected_pokemon_types = st.sidebar.multiselect(
+            "Filter by Pokémon Type", options=pokemon_types, default=[]
+        )
+        if selected_pokemon_types:
+            cards_dict = {
+                k: v
+                for k, v in cards_dict.items()
+                if v[0].supertype == "Pokémon"
+                   and v[0].types
+                   and any(t in selected_pokemon_types for t in v[0].types)
+            }
+
+    # Search by Name
+    search_query = st.sidebar.text_input("Search by Name")
+    if search_query:
+        cards_dict = {
+            k: v
+            for k, v in cards_dict.items()
+            if search_query.lower() in v[0].name.lower()
+        }
+
+    # Return None if no cards match
+    if not cards_dict:
+        return None
+
+    return cards_dict
+
+
+def view_cards() -> None:
+    """
+    Main function to display the user's card collection with filtering options.
+    """
+    st.header("Your Cards", anchor=False)
+    if not st.session_state.cards:
+        st.warning("No cards available. Add some cards first!")
+        return
+
+    cards_dict: Dict[str, Tuple[Card, int]] = st.session_state.cards.copy()
+
+    # Apply filters from the sidebar
+    filtered_cards = render_sidebar(cards_dict)
+
+    # Display filtered cards
+    if not filtered_cards:
+        st.warning("No cards match the current filters.")
+        return
+
+    view_collection(filtered_cards)

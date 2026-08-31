@@ -1,0 +1,1114 @@
+#include "AInstruction.h"
+#include <spdlog/spdlog.h>
+
+#include "z3++.h"
+
+using namespace ari_exe;
+
+std::map<llvm::Instruction*, AInstruction*>
+AInstruction::cached_instructions;
+
+std::map<llvm::Value*, int>
+AInstructionCall::value_counter;
+
+AInstruction*
+AInstruction::create(llvm::Instruction* inst) {
+    if (cached_instructions.find(inst) != cached_instructions.end()) {
+        return cached_instructions.at(inst);
+    }
+
+    AInstruction* res = nullptr;
+    if (inst->isDebugOrPseudoInst()) {
+        res = new AInstructionDebug(inst);
+    } else if (auto bin_inst = llvm::dyn_cast_or_null<llvm::BinaryOperator>(inst)) {
+        res = new AInstructionBinary(bin_inst);
+    } else if (auto cmp_inst = llvm::dyn_cast_or_null<llvm::ICmpInst>(inst)) {
+        res = new AInstructionICmp(cmp_inst);
+    } else if (auto call_inst = llvm::dyn_cast_or_null<llvm::CallInst>(inst)) {
+        res = new AInstructionCall(call_inst);
+    } else if (auto branch_inst = llvm::dyn_cast_or_null<llvm::BranchInst>(inst)) {
+        res = new AInstructionBranch(branch_inst);
+    } else if (auto ret_inst = llvm::dyn_cast_or_null<llvm::ReturnInst>(inst)) {
+        // return instruction, do nothing
+        res = new AInstructionReturn(inst);
+    } else if (auto zext_inst = llvm::dyn_cast_or_null<llvm::ZExtInst>(inst)) {
+        res = new AInstructionZExt(zext_inst);
+    } else if (auto sext_inst = llvm::dyn_cast_or_null<llvm::SExtInst>(inst)) {
+        res = new AInstructionSExt(sext_inst);
+    } else if (auto trunc_inst = llvm::dyn_cast_or_null<llvm::TruncInst>(inst)) {
+        res = new AInstructionTrunc(trunc_inst);
+    } else if (auto phi = llvm::dyn_cast_or_null<llvm::PHINode>(inst)) {
+        res = new AInstructionPhi(phi);
+    } else if (auto select = llvm::dyn_cast_or_null<llvm::SelectInst>(inst)) {
+        res = new AInstructionSelect(select);
+    } else if (auto load_inst = llvm::dyn_cast_or_null<llvm::LoadInst>(inst)) {
+        res = new AInstructionLoad(load_inst);
+    } else if (auto store_inst = llvm::dyn_cast_or_null<llvm::StoreInst>(inst)) {
+        res = new AInstructionStore(store_inst);
+    } else if (auto gep_inst = llvm::dyn_cast_or_null<llvm::GetElementPtrInst>(inst)) {
+        res = new AInstructionGEP(gep_inst);
+    } else if (auto alloca_inst = llvm::dyn_cast_or_null<llvm::AllocaInst>(inst)) {
+        res = new AInstructionAlloca(alloca_inst);
+    } else {
+        assert(false && "Unspported instruction type");
+    }
+    cached_instructions.insert_or_assign(inst, res);
+    return res;
+}
+
+loop_state_list
+AInstruction::execute(loop_state_ptr state) {
+    auto new_states = execute(std::static_pointer_cast<State>(state));
+    loop_state_list new_base_states;
+    for (auto& new_state : new_states) {
+        auto new_loop_state = std::make_shared<LoopState>(LoopState(*new_state));
+        new_loop_state->path_condition_in_loop = state->path_condition_in_loop;
+        new_base_states.push_back(new_loop_state);
+    }
+    return new_base_states;
+}
+
+rec_state_list
+AInstruction::execute(rec_state_ptr state) {
+    auto new_states = execute(std::static_pointer_cast<State>(state));
+    rec_state_list new_base_states;
+    for (auto& new_state : new_states) {
+        auto new_loop_state = std::make_shared<RecState>(RecState(*new_state));
+        new_base_states.push_back(new_loop_state);
+    }
+    return new_base_states;
+}
+
+AInstruction*
+AInstruction::get_next_instruction() {
+    // auto next_inst = inst->getNextNonDebugInstruction();
+    auto next_inst = inst->getNextNode();
+    if (next_inst) {
+        return create(next_inst);
+    }
+    return nullptr;
+}
+
+state_list
+AInstructionBinary::execute(state_ptr state) {
+    auto bin_inst = dyn_cast<llvm::BinaryOperator>(inst);
+    auto opcode = bin_inst->getOpcode();
+
+    // TODO:
+    // Current implementation create new states every time.
+    // In future, in-place update should be implemented.
+    std::vector<state_ptr> new_states;
+
+    auto op0 = bin_inst->getOperand(0);
+    auto op1 = bin_inst->getOperand(1);
+    auto op0_value = state->evaluate(op0);
+    auto op1_value = state->evaluate(op1);
+
+    auto& z3ctx = op0_value.ctx();
+    Expression result;
+
+    state_ptr new_state = std::make_shared<State>(*state);
+    if (opcode == llvm::Instruction::Add) {
+        result = op0_value + op1_value;
+    } else if (opcode == llvm::Instruction::Sub) {
+        result = op0_value - op1_value;
+    } else if (opcode == llvm::Instruction::Mul) {
+        result = op0_value * op1_value;
+    } else if (opcode == llvm::Instruction::SDiv || opcode == llvm::Instruction::UDiv) {
+        result = op0_value / op1_value;
+    } else if (opcode == llvm::Instruction::SRem || opcode == llvm::Instruction::URem) {
+        result = op0_value % op1_value;
+    } else if (opcode == llvm::Instruction::And) {
+        result = op0_value && op1_value;
+    } else if (opcode == llvm::Instruction::Or) {
+        result = op0_value || op1_value;
+    } else if (opcode == llvm::Instruction::Xor) {
+        result = op0_value ^ op1_value;
+    } else {
+        throw std::runtime_error("Unsupported binary operation");
+    }
+
+    new_state->memory.put_temp(inst, result);
+    new_state->step_pc();
+
+    return {new_state};
+}
+
+std::vector<state_ptr>
+AInstructionICmp::execute(state_ptr state) {
+    auto cmp_inst = dyn_cast<llvm::ICmpInst>(inst);
+    auto pred = cmp_inst->getPredicate();
+
+    auto op0 = cmp_inst->getOperand(0);
+    auto op1 = cmp_inst->getOperand(1);
+    auto op0_value = state->evaluate(op0);
+    auto op1_value = state->evaluate(op1);
+    auto& z3ctx = op0_value.ctx();
+    Expression result;
+
+    if (pred == llvm::ICmpInst::ICMP_EQ) {
+        result = op0_value == op1_value;
+    } else if (pred == llvm::ICmpInst::ICMP_NE) {
+        result = op0_value != op1_value;
+    } else if (llvm::ICmpInst::isLT(pred)) {
+        result = op0_value < op1_value;
+    } else if (llvm::ICmpInst::isLE(pred)) {
+        result = op0_value <= op1_value;
+    } else if (llvm::ICmpInst::isGT(pred)) {
+        result = op0_value > op1_value;
+    } else if (llvm::ICmpInst::isGE(pred)) {
+        result = op0_value >= op1_value;
+    } else {
+        llvm::errs() << "Unsupported ICmp predicate\n";
+        assert(false);
+    }
+    state_ptr new_state = std::make_shared<State>(*state);
+    new_state->memory.put_temp(inst, result);
+    new_state->step_pc();
+    return {new_state};
+}
+
+std::vector<state_ptr>
+AInstructionAlloca::execute(state_ptr state) {
+    auto alloca_inst = dyn_cast<llvm::AllocaInst>(inst);
+    auto& z3ctx = state->z3ctx;
+
+    assert(!alloca_inst->isArrayAllocation() && "Array allocation is not supported yet");
+    // Allocate memory for the alloca instruction
+    // auto size = alloca_inst->getAllocatedType()->getPrimitiveSizeInBits() / 8;
+    auto size = 1;
+    auto ty = alloca_inst->getAllocatedType();
+    if (ty->isArrayTy()) {
+        auto size_value = alloca_inst->getArraySize();
+        size = ty->getArrayNumElements();
+    }
+    
+    state_ptr new_state = std::make_shared<State>(*state);
+    z3::expr_vector sizes(z3ctx);
+    sizes.push_back(z3ctx.int_val(size));
+    new_state->memory.allocate(inst, sizes);
+    new_state->step_pc();
+    return {new_state};
+}
+
+std::vector<state_ptr>
+AInstructionCall::execute(state_ptr state) {
+    auto call_inst = dyn_cast<llvm::CallInst>(inst);
+    auto called_func = call_inst->getCalledFunction();
+
+    auto& z3ctx = state->z3ctx;
+
+    z3::expr result(z3ctx);
+
+    if (called_func && called_func->getName().ends_with("assert")) {
+        // verification. should check if the condition is true
+        return {execute_assert(state)};
+    } else if (called_func && called_func->getName().find("reach_error") != std::string::npos) {
+        return {execute_reach_error(state)};
+    } else if (called_func && called_func->getName().find("assume") != std::string::npos) {
+        // assume function, add the condition to the path condition
+        return {execute_assume(state)};
+    } else if (called_func && called_func->getName().find("malloc") != std::string::npos) {
+        // malloc function, allocate memory and return the pointer
+        return {execute_malloc(state)};
+    } else if (called_func && called_func->hasExactDefinition()) {
+        return {execute_normal(state)};
+    } else if (called_func && called_func->getName().find("llvm.stacksave.p0") != std::string::npos) {
+        // handle llvm.stacksave.p0
+        auto dummy_ptr = z3ctx.int_val(0); // or create a symbolic pointer
+        state->memory.put_temp(call_inst, dummy_ptr);
+        state->step_pc();
+        return {state};
+    } else if (called_func && called_func->getName().find("llvm.stackrestore.p0") != std::string::npos) {
+        // handle llvm.stackrestore.p0
+        state->step_pc();
+        return {state};
+    } else if (called_func && called_func->getName().find("llvm.memcpy") != std::string::npos) {
+        return {execute_memcpy(state)};
+    } else {
+        return {execute_unknown(state)};
+    }
+}
+
+state_ptr
+AInstructionCall::execute_normal(state_ptr state) {
+    auto try_cache = execute_cache(state);
+    if (try_cache) return try_cache;
+
+    auto call_inst = dyn_cast<llvm::CallInst>(inst);
+    auto called_func = call_inst->getCalledFunction();
+
+    // check if the function is recursive and not yet summarized
+    auto ret_type = called_func->getReturnType();
+    bool is_visited = Cache::get_instance()->is_visited(called_func);
+    if (!is_visited && !state->is_summarizing() && is_recursive(called_func) && !State::func_summaries->get_value(called_func).has_value()) {
+        Cache::get_instance()->mark_visited(called_func);
+        auto summary = summarize_complete(state->z3ctx);
+        if (summary.has_value()) {
+            State::func_summaries->insert_or_assign(called_func, *summary);
+        }
+    }
+
+    auto summary = State::func_summaries->get_value(called_func);
+    auto& z3ctx = state->z3ctx;
+
+    state_ptr new_state = std::make_shared<State>(*state);
+    if (summary.has_value() && !summary->is_over_approximated()) {
+        std::vector<Expression> args;
+        for (unsigned i = 0; i < call_inst->arg_size(); i++) {
+            auto arg = call_inst->getArgOperand(i);
+            auto arg_value = state->evaluate(arg);
+            args.push_back(arg_value);
+        }
+
+        auto function_value = summary->evaluate(args);
+        // new_state->memory.allocate(inst, z3::expr_vector(z3ctx));
+        new_state->memory.put_temp(inst, function_value);
+        new_state->step_pc();
+        return new_state;
+    }
+    if (summary.has_value() && summary->is_over_approximated()) {
+        z3::expr_vector unknowns(z3ctx);
+        z3::expr_vector initial_values(z3ctx);
+        for (int i = 0; i < call_inst->arg_size(); i++) {
+            auto arg = call_inst->getArgOperand(i);
+            assert(arg->getType()->isPointerTy() && "Over-approximated function should only have pointer arguments");
+            auto arg_obj = new_state->memory.get_object_pointed_by(arg);
+            auto arg_value = arg_obj->read().as_expr();
+            initial_values.push_back(arg_value);
+            auto name = arg->getName() + "_unknwon_over_approximated" + std::to_string(value_counter[inst]++);
+            auto unknown = z3ctx.int_const(name.str().c_str());
+            unknowns.push_back(unknown);
+            arg_obj->write(unknown);
+        }
+
+        closed_form_ty closed_form;
+        auto params = summary->get_params();
+        for (auto closed : summary->get_over_approx()) {
+            auto lhs = closed.first;
+            auto rhs = closed.second;
+            lhs = lhs.substitute(params, unknowns);
+            rhs = rhs.substitute(params, initial_values).simplify();
+            new_state->append_path_condition(lhs == rhs);
+        }
+        new_state->append_path_condition(summary->get_exit_condition().substitute(params, unknowns));
+        new_state->step_pc();
+        new_state->is_over_approx = true;
+        return new_state;
+    }
+
+    z3::expr result(z3ctx);
+
+    auto& frame = new_state->memory.push_frame(called_func);
+    frame.prev_pc = state->pc;
+    // push the arguments to the stack
+    for (unsigned i = 0; i < call_inst->arg_size(); i++) {
+        auto arg = call_inst->getArgOperand(i);
+        auto param = called_func->getArg(i);
+        if (param->getType()->isPointerTy()) {
+            auto target_obj = state->memory.get_object(arg);
+            // auto addr = new_state->memory.allocate(param, target_obj->get_address());
+            new_state->memory.put_temp(param, target_obj->get_ptr_value());
+        } else {
+            auto arg_value = state->evaluate(arg);
+            // new_state->memory.allocate(param, obj->read());
+            new_state->memory.put_temp(param, arg_value);
+        }
+    }
+    auto called_first_inst = &*called_func->getEntryBlock().getFirstNonPHIOrDbg();
+    auto next_pc = AInstruction::create(called_first_inst);
+    new_state->step_pc(next_pc);
+    return new_state;
+}
+
+state_ptr
+AInstructionCall::execute_cache(state_ptr state) {
+    auto call_inst = dyn_cast_or_null<llvm::CallInst>(inst);
+    assert(call_inst);
+    auto called_func = call_inst->getCalledFunction();
+
+    for (auto& arg : call_inst->args()) {
+        if (arg->getType()->isPointerTy()) {
+            return nullptr;
+        }
+    }
+
+    auto cache = Cache::get_instance();
+    auto model = state->get_model();
+    param_list_ty args;
+    for (int i = 0; i < call_inst->arg_size(); i++) {
+        auto arg = call_inst->getArgOperand(i);
+        auto state_value = state->evaluate(arg);
+        auto concrete_value = model.eval(state_value.as_expr(), true);
+        if (!state->is_concrete(state_value, concrete_value)) {
+            return nullptr;
+        }
+        args.push_back(concrete_value.as_int64());
+    }
+    auto cached_value = cache->get_func_value(called_func, args);
+    if (cached_value.has_value()) {
+        // if the function is cached, return the cached value
+        state_ptr new_state = std::make_shared<State>(*state);
+        auto& z3ctx = state->z3ctx;
+        auto value = z3ctx.int_val(cached_value.value());
+        // new_state->memory.allocate(inst, value);
+        new_state->memory.put_temp(inst, value);
+        new_state->step_pc();
+        return new_state;
+    }
+    return nullptr;
+}
+
+state_ptr
+AInstructionCall::execute_assert(state_ptr state) {
+    // assert function, add the condition to the path condition
+    // and check if the condition is true
+    auto call_inst = dyn_cast<llvm::CallInst>(inst);
+    auto called_func = call_inst->getCalledFunction();
+
+    auto& z3ctx = state->z3ctx;
+
+    auto cond = call_inst->getArgOperand(0);
+    auto cond_value = state->evaluate(cond);
+    auto new_pc = state->pc->get_next_instruction();
+    state_ptr new_state = std::make_shared<State>(*state);
+    new_state->step_pc();
+    new_state->status = State::VERIFYING;
+    if (cond_value.as_expr().is_bool()) {
+        new_state->verification_condition = cond_value;
+    } else {
+        new_state->verification_condition = cond_value != z3ctx.int_val(0);
+    }
+    return new_state;
+}
+
+state_ptr
+AInstructionCall::execute_reach_error(state_ptr state) {
+    // assert function, add the condition to the path condition
+    // and check if the condition is true
+    state->status = State::REACH_ERROR;
+    return state;
+}
+
+state_ptr
+AInstructionCall::execute_assume(state_ptr state) {
+    // assume function, add the condition to the path condition
+    // and check if the condition is true
+    auto call_inst = dyn_cast<llvm::CallInst>(inst);
+    auto called_func = call_inst->getCalledFunction();
+
+    auto& z3ctx = state->z3ctx;
+
+    auto cond = call_inst->getArgOperand(0);
+    auto cond_value = state->evaluate(cond);
+
+    state_ptr new_state = std::make_shared<State>(*state);
+    new_state->append_path_condition(cond_value);
+    new_state->step_pc();
+    new_state->status = State::TESTING;
+    return new_state;
+}
+
+state_ptr
+AInstructionCall::execute_unknown(state_ptr state) {
+    auto call_inst = dyn_cast<llvm::CallInst>(inst);
+    auto called_func = call_inst->getCalledFunction();
+
+    auto& z3ctx = state->z3ctx;
+
+    Expression result(z3ctx);
+
+    // external function value is unknown, so symbolic
+    auto name = "ari_" + inst->getName().str() + "_unknown_" + std::to_string(value_counter[inst]++);
+    auto ret_type = call_inst->getType();
+
+    if (ret_type->isIntegerTy()) {
+        result = z3ctx.int_const(name.c_str());
+    } else if (ret_type->isDoubleTy()) {
+        result = z3ctx.real_const(name.c_str());
+    } else if (ret_type->isFloatTy()) {
+        result = z3ctx.real_const(name.c_str());
+    } else {
+        throw std::runtime_error("Unsupported return type for call instruction");
+    }
+    state_ptr new_state = std::make_shared<State>(*state);
+    new_state->memory.put_temp(inst, result);
+    // new_state->write(inst, result);
+    if (called_func && called_func->getName().ends_with("uint")) {
+        new_state->append_path_condition(result >= z3ctx.int_val(0));
+    } else if (called_func && called_func->getName().ends_with("uchar")) {
+        new_state->append_path_condition(result >= z3ctx.int_val(0));
+        new_state->append_path_condition(result <= z3ctx.int_val(255));
+    }
+    new_state->step_pc();
+    return new_state;
+}
+
+state_ptr
+AInstructionCall::execute_memcpy(state_ptr state) {
+    auto call_inst = dyn_cast<llvm::CallInst>(inst);
+    auto dst = call_inst->getArgOperand(0);
+    auto src = call_inst->getArgOperand(1);
+    auto len = call_inst->getArgOperand(2);
+
+    auto len_value = state->evaluate(len).as_expr();
+    auto const_len_value = len_value.as_int64() / 4; // ensure it is concrete
+
+    state_ptr new_state = std::make_shared<State>(*state);
+    auto dst_obj = new_state->memory.get_object_pointed_by(dst);
+    auto src_obj = new_state->memory.get_object_pointed_by(src);
+    for (int i = 0; i < const_len_value; i++) {
+        Expression idx(new_state->z3ctx.int_val(i));
+        auto v = src_obj->read({idx}).as_expr();
+        dst_obj->write({idx}, v);
+    }
+
+    new_state->step_pc();
+    return new_state;
+}
+
+state_ptr
+AInstructionCall::execute_malloc(state_ptr state) {
+    // malloc function, allocate memory and return the pointer
+    auto call_inst = dyn_cast<llvm::CallInst>(inst);
+    auto size_bytes = call_inst->arg_begin()->get();
+    auto size_bytes_expr = state->evaluate(size_bytes);
+    // TODO: assume it an integer array and the size of an int is 32 bits;
+    // TODO: assume it is 1-d
+    z3::expr_vector dims(state->z3ctx);
+    dims.push_back((size_bytes_expr / state->z3ctx.int_val(4)).as_expr().simplify());
+    auto new_state = std::make_shared<State>(*state);
+    new_state->memory.heap_alloca(call_inst, dims);
+    new_state->step_pc();
+    return {new_state};
+}
+
+std::vector<state_ptr>
+AInstructionCall::execute_if_not_target(state_ptr state, llvm::Function* target) {
+    auto call_inst = dyn_cast<llvm::CallInst>(inst);
+    auto called_func = call_inst->getCalledFunction();
+
+    auto& z3ctx = state->z3ctx;
+
+    if (called_func == target) {
+        // TODO: assume all types are int
+        return execute_naively(state);
+    } else {
+        // execute the called function
+        auto new_state = execute_normal(state);
+        // return execute_if_not_target(new_state, target);
+        return {new_state};
+    }
+}
+
+std::vector<state_ptr>
+AInstructionCall::execute_naively(state_ptr state) {
+    // execute the function call f(args) by simply creating z3::expr f(args)
+    auto call_inst = dyn_cast<llvm::CallInst>(inst);
+    auto called_func = call_inst->getCalledFunction();
+
+    auto& z3ctx = state->z3ctx;
+
+    size_t num_args = call_inst->arg_size();
+    z3::sort_vector domain(z3ctx);
+    for (int i = 0; i < num_args; i++) domain.push_back(z3ctx.int_sort());
+    auto func_name = "ari_" + called_func->getName().str();
+    z3::func_decl f = z3ctx.function(func_name.c_str(), domain, z3ctx.int_sort());
+    z3::expr_vector args(z3ctx);
+    for (int i = 0; i < num_args; i++) {
+        auto arg = call_inst->getArgOperand(i);
+        if (arg->getType()->isPointerTy()) {
+            auto arg_value = state->memory.get_object(arg);
+            args.push_back(arg_value->get_ptr_value().base.as_expr());
+        } else {
+            auto arg_value = state->evaluate(arg);
+            args.push_back(arg_value.as_expr());
+        }
+    }
+    auto new_state = std::make_shared<State>(*state);
+    new_state->memory.put_temp(inst, f(args));
+    new_state->step_pc();
+    return {new_state};
+}
+
+bool
+AInstructionCall::is_recursive(llvm::Function* target) {
+    // this function is Aided with basic GitHub coding tools
+    auto CG = AnalysisManager::get_instance()->get_CG();
+    auto* node = CG->operator[](target);
+    std::set<llvm::CallGraphNode*> visited;
+    std::function<bool(llvm::CallGraphNode*)> dfs = [&](llvm::CallGraphNode* n) {
+        if (!n) return false;
+        if (!visited.insert(n).second) return false;
+        for (auto& callRecord : *n) {
+            auto* callee = callRecord.second;
+            if (callee == node) return true; // cycle detected
+            if (dfs(callee)) return true;
+        }
+        return false;
+    };
+    return dfs(node);
+
+}
+
+std::optional<FunctionSummary>
+AInstructionCall::summarize_complete(z3::context& z3ctx) {
+    auto call_inst = dyn_cast<llvm::CallInst>(inst);
+    auto called_func = call_inst->getCalledFunction();
+
+    FunctionSummarizer fs(called_func, z3ctx);
+    return fs.get_summary();
+}
+
+state_list
+AInstructionBranch::execute(state_ptr state) {
+    return _execute(state);
+}
+
+loop_state_list
+AInstructionBranch::execute(loop_state_ptr state) {
+    return _execute(state);
+}
+
+rec_state_list
+AInstructionBranch::execute(rec_state_ptr state) {
+    return _execute(state);
+}
+
+template<typename state_ty>
+state_list_base<state_ty>
+AInstructionBranch::_execute(std::shared_ptr<state_ty> state) {
+    auto branch_inst = dyn_cast<llvm::BranchInst>(inst);
+    auto new_trace = state->trace;
+    new_trace.push_back(branch_inst->getParent());
+
+    std::vector<state_ptr_base<state_ty>> new_states;
+    if (branch_inst->isConditional()) {
+        auto cond = branch_inst->getCondition();
+        auto cond_value = state->evaluate(cond);
+
+        auto true_block = branch_inst->getSuccessor(0);
+        auto true_pc = AInstruction::create(&*true_block->instructionsWithoutDebug().begin());
+        auto true_state = std::make_shared<state_ty>(*state);
+        true_state->trace = new_trace;
+        true_state->status = State::TESTING;
+        // true_state->path_condition = state->path_condition && cond_value;
+        true_state->append_path_condition(cond_value);
+        true_state->step_pc(true_pc);
+
+        auto false_block = branch_inst->getSuccessor(1);
+        auto false_pc = AInstruction::create(&*false_block->instructionsWithoutDebug().begin());
+        auto false_state = std::make_shared<state_ty>(*state);
+        false_state->trace = new_trace;
+        false_state->status = State::TESTING;
+        // false_state->path_condition = state->path_condition && !cond_value;
+        false_state->append_path_condition(!cond_value);
+        false_state->step_pc(false_pc);
+
+        new_states.push_back(true_state);
+        new_states.push_back(false_state);
+    } else {
+        // unconditional branch
+        auto next_pc = AInstruction::create(&*branch_inst->getSuccessor(0)->instructionsWithoutDebug().begin());
+        auto new_state = std::make_shared<state_ty>(*state);
+        new_state->trace = new_trace;
+        new_state->step_pc(next_pc);
+        new_states.push_back(new_state);
+    }
+    return new_states;
+}
+
+std::vector<state_ptr>
+AInstructionReturn::execute(state_ptr state) {
+    if (state->memory.stack_size() == 1) {
+        // no function call, just terminate
+        state->status = State::TERMINATED;
+        return {state};
+    }
+    // llvm::errs() << state->memory.to_string() << "\n";
+    auto ret = dyn_cast<llvm::ReturnInst>(inst);
+
+    state_ptr new_state = std::make_shared<State>(*state);
+    auto& frame = new_state->memory.pop_frame();
+
+    auto ret_value = ret->getReturnValue();
+    new_state->step_pc(frame.prev_pc);
+    auto call_inst = dyn_cast<llvm::CallInst>(new_state->pc->inst);
+    if (ret_value) {
+        auto ret_expr = state->evaluate(ret_value);
+
+        // go back to the called site
+        assert(call_inst);
+        // new_state->memory.allocate(call_inst, ret_expr);
+        new_state->memory.put_temp(call_inst, ret_expr);
+        cache_func_value(state, ret_expr);
+    }
+    new_state->step_pc();
+    return {new_state};
+}
+
+void
+AInstructionReturn::cache_func_value(state_ptr state, const Expression& result) {
+    auto cache_instance = Cache::get_instance();
+    auto& top_frame = state->memory.top_frame();
+    param_list_ty args;
+
+    auto model = state->get_model();
+    auto concrete_result = model.eval(result.as_expr(), false);
+    if (!state->is_concrete(result, concrete_result)) return;
+
+    for (auto& param : top_frame.func->args()) {
+        auto arg_value = state->evaluate(&param);
+        auto concrete_value = model.eval(arg_value.as_expr(), true);
+        if (!state->is_concrete(arg_value, concrete_value)) return;
+        args.push_back(concrete_value.as_int64());
+    }
+    cache_instance->cache_func_value(top_frame.func, args, concrete_result.as_int64());
+}
+
+std::vector<state_ptr>
+AInstructionZExt::execute(state_ptr state) {
+    auto zext_inst = dyn_cast<llvm::ZExtInst>(inst);
+    auto op = zext_inst->getOperand(0);
+    auto op_value = state->evaluate(op);
+    auto& z3ctx = op_value.ctx();
+    z3::expr result(z3ctx);
+
+    state_ptr new_state = std::make_shared<State>(*state);
+    // new_state->write(inst, op_value);
+    // new_state->memory.allocate(inst, op_value);
+    new_state->memory.put_temp(inst, op_value);
+    new_state->step_pc();
+    return {new_state};
+}
+
+std::vector<state_ptr>
+AInstructionSExt::execute(state_ptr state) {
+    auto sext_inst = dyn_cast_or_null<llvm::SExtInst>(inst);
+    auto op = sext_inst->getOperand(0);
+    auto op_value = state->evaluate(op);
+    auto& z3ctx = op_value.ctx();
+    z3::expr result(z3ctx);
+
+    state_ptr new_state = std::make_shared<State>(*state);
+    // new_state->write(inst, op_value);
+    // new_state->memory.allocate(inst, op_value);
+    new_state->memory.put_temp(inst, op_value);
+    new_state->step_pc();
+    return {new_state};
+}
+
+std::set<llvm::Loop*> AInstructionPhi::failed_loops;
+
+std::vector<state_ptr>
+AInstructionPhi::execute(state_ptr state) {
+    auto phi_inst = dyn_cast<llvm::PHINode>(inst);
+    auto manager = AnalysisManager::get_instance();
+    auto& LI = manager->get_LI(phi_inst->getFunction());
+    auto loop = LI.getLoopFor(phi_inst->getParent());
+
+    if (loop && failed_loops.find(loop) == failed_loops.end()) {
+        if (!state->is_summarizing()) {
+            auto accelarated_states = execute_if_summarizable(state);
+            if (accelarated_states.size() > 0) {
+                return accelarated_states;
+            } else {
+                failed_loops.insert(loop);
+            }
+        }
+    }
+
+    auto& z3ctx = state->z3ctx;
+    auto prev_block = state->trace.back();
+    llvm::Value* selected_value = phi_inst->getIncomingValueForBlock(prev_block);
+    auto selected_value_expr = state->evaluate(selected_value);
+
+    state_ptr new_state = std::make_shared<State>(*state);
+    // new_state->write(inst, selected_value_expr);
+    // new_state->memory.allocate(inst, selected_value_expr);
+    new_state->memory.put_temp(inst, selected_value_expr);
+    new_state->step_pc();
+
+    return {new_state};
+}
+
+std::vector<state_ptr>
+AInstructionPhi::execute_if_summarizable(state_ptr state) {
+    auto phi_inst = dyn_cast<llvm::PHINode>(inst);
+    auto manager = AnalysisManager::get_instance();
+    auto& LI = manager->get_LI(phi_inst->getFunction());
+    auto loop = LI.getLoopFor(phi_inst->getParent());
+    if (loop == nullptr) return {};
+
+    auto header = loop->getHeader();
+
+    // try summarizing the loop only when encountering the first phi of the loop
+    if (phi_inst != &*header->phis().begin()) return {};
+
+    spdlog::info("Summarizing loop {}", loop->getHeader()->getName().str());
+    auto loop_summarizer = LoopSummarizer(loop, state);
+    auto summary = loop_summarizer.get_summary();
+    if (!summary.has_value()) {
+        spdlog::info("Cannot summarize loop {}", loop->getHeader()->getName().str());
+        return {};
+    }
+
+    state_ptr new_state = std::make_shared<State>(*state);
+    if (summary.has_value()) {
+        auto invariant_result = summary->get_invariant_results();
+        if (std::find(invariant_result.begin(), invariant_result.end(), FAIL) != invariant_result.end()) {
+            if (summary->is_over_approximated() || new_state->is_over_approx) {
+                new_state->status = State::UNKNOWN;
+            } else {
+                new_state->status = State::FAIL;
+            }
+            return {new_state};
+        } else if (std::find(invariant_result.begin(), invariant_result.end(), VERIUNKNOWN) != invariant_result.end()) {
+            new_state->status = State::UNKNOWN;
+            return {new_state};
+        }
+    }
+
+    // assert(!summary->is_over_approximated() && "Over-approximation is not supported yet");
+
+
+    auto exit_block = loop->getExitBlock();
+    // only consider those loops with only one exit block
+    assert(exit_block);
+
+    auto entering_block = get_loop_entering_block(loop);
+    if (summary->is_over_approximated()) {
+        for (auto& inst : *header) {
+            if (auto phi = llvm::dyn_cast_or_null<llvm::PHINode>(&inst)) {
+                auto name = get_z3_name(phi->getName().str());
+                auto phi_expr = new_state->z3ctx.int_const(name.c_str());
+                auto initial_value = phi->getIncomingValueForBlock(entering_block);
+                auto initial_value_expr = new_state->evaluate(initial_value);
+                auto evaluated_value = summary->evaluate_expr(phi_expr);
+                auto N = summary->get_N();
+                if (N.has_value()) {
+                    z3::expr_vector src(new_state->z3ctx);
+                    z3::expr_vector dst(new_state->z3ctx);
+                    src.push_back(manager->get_ind_var());
+                    dst.push_back(N.value());
+                    // new_state->write(phi, z3::ite(*N == 0, initial_value_expr, evaluated_value.substitute(src, dst)));
+                    // new_state->memory.allocate(phi, z3::ite(*N == 0, initial_value_expr, evaluated_value.substitute(src, dst)));
+                    new_state->memory.put_temp(phi, z3::ite(*N == 0, initial_value_expr.as_expr(), evaluated_value.substitute(src, dst)));
+                } else {
+                    // new_state->write(phi, evaluated_value);
+                    // new_state->memory.allocate(phi, evaluated_value);
+                    new_state->memory.put_temp(phi, evaluated_value);
+                }
+            }
+        }
+        for (auto p : summary->summary_over_approx) {
+            new_state->append_path_condition(p.first == p.second);
+        }
+        new_state->append_path_condition(summary->get_constraints());
+        new_state->is_over_approx = true;
+    } else {
+        auto& z3ctx = manager->get_z3ctx();
+        z3::expr_vector args(z3ctx);
+        for (auto& inst : *header) {
+            if (auto phi = llvm::dyn_cast_or_null<llvm::PHINode>(&inst)) {
+                auto name = get_z3_name(phi->getName().str());
+                auto phi_expr = z3ctx.int_const(name.c_str());
+                args.push_back(phi_expr);
+            } else if (auto store_inst = llvm::dyn_cast_or_null<llvm::StoreInst>(&inst)) {
+                auto ptr = store_inst->getPointerOperand();
+                auto name = get_z3_name(ptr->getName().str());
+                auto ptr_expr = z3ctx.int_const(name.c_str());
+                args.push_back(ptr_expr);
+            }
+        }
+        auto arrays_ptr = state->memory.get_arrays();
+        for (int i = 0; i < arrays_ptr.size(); i++) {
+            // for each array, we need to get the signature
+            auto array_ptr = arrays_ptr[i];
+            args.push_back(array_ptr->get_signature());
+        }
+        z3::expr_vector closed_forms = summary->evaluate(args);
+        // auto phi_it = header->phis().begin();
+        auto modified_values = summary->get_modified_values();
+        for (int i = 0; i < closed_forms.size(); i++) {
+            auto modified_value = modified_values[i];
+            auto N = summary->get_N();
+            if (N.has_value()) {
+                z3::expr_vector src(z3ctx);
+                z3::expr_vector dst(z3ctx);
+                src.push_back(manager->get_ind_var());
+                dst.push_back(N.value());
+                // new_state->write(modified_value, closed_forms[i].substitute(src, dst));
+                // new_state->memory.allocate(modified_value, closed_forms[i].substitute(src, dst));
+                if (auto obj = new_state->memory.get_object_pointed_by(modified_value)) {
+                    obj->write(closed_forms[i].substitute(src, dst));
+                } else {
+                    new_state->memory.put_temp(modified_value, closed_forms[i].substitute(src, dst));
+                }
+
+            } else {
+                new_state->memory.put_temp(modified_value, closed_forms[i]);
+            }
+        }
+    }
+    // loop summary only computes the values of phi nodes and store instructions
+    // so we need to execute the instructions in the header until the terminator
+    // to get closed-form solutions to other values in header, which may also be
+    // used outside the loop
+    auto cur_inst = &*header->getFirstNonPHIOrDbg();
+    auto cur_state = new_state;
+    cur_state->step_pc(AInstruction::create(cur_inst));
+    std::queue<state_ptr> states;
+    std::vector<state_ptr> res;
+    states.push(cur_state);
+    while (!states.empty()) {
+        cur_state = states.front();
+        states.pop();
+        if (cur_state->pc->inst == header->getTerminator()) {
+            res.push_back(cur_state);
+            continue;
+        }
+        auto new_states = cur_state->pc->execute(cur_state);
+        for (auto& new_state : new_states) states.push(new_state);
+    }
+
+    for (auto& state : res) {
+        state->trace.push_back(header);
+        // auto new_pc = AInstruction::create(&*exit_block->begin());
+        auto exit_block_first_inst = &*exit_block->begin();
+        // if (exit_block_first_inst->isDebugOrPseudoInst())
+        //     exit_block_first_inst = exit_block_first_inst->getNextNonDebugInstruction();
+        auto new_pc = AInstruction::create(exit_block_first_inst);
+        state->step_pc(new_pc);
+    }
+    return res;
+}
+
+template<typename state_ty>
+state_list_base<state_ty>
+AInstructionSelect::_execute(std::shared_ptr<state_ty> state) {
+    auto select_inst = dyn_cast<llvm::SelectInst>(inst);
+    auto cond = select_inst->getCondition();
+    auto cond_value = state->evaluate(cond);
+
+    auto true_value = select_inst->getTrueValue();
+    auto true_value_expr = state->evaluate(true_value);
+    auto true_state = std::make_shared<state_ty>(*state);
+    // true_state->memory.allocate(inst, true_value_expr);
+    // true_state->write(inst, true_value_expr);
+    true_state->memory.put_temp(inst, true_value_expr);
+    true_state->status = State::TESTING;
+    // true_state->path_condition = state->path_condition && cond_value;
+    true_state->append_path_condition(cond_value);
+    true_state->step_pc();
+
+    auto false_value = select_inst->getFalseValue();
+    auto false_value_expr = state->evaluate(false_value);
+    auto false_state = std::make_shared<state_ty>(*state);
+    // false_state->memory.allocate(inst, false_value_expr);
+    false_state->memory.put_temp(inst, false_value_expr);
+    // false_state->write(inst, false_value_expr);
+    false_state->status = State::TESTING;
+    // false_state->path_condition = state->path_condition && !cond_value;
+    false_state->append_path_condition(!cond_value);
+    false_state->step_pc();
+
+    return {true_state, false_state};
+}
+
+state_list
+AInstructionSelect::execute(state_ptr state) {
+    return _execute(state);
+}
+
+loop_state_list
+AInstructionSelect::execute(loop_state_ptr state) {
+    return _execute(state);
+}
+
+llvm::BasicBlock*
+AInstruction::get_block() {
+    return inst->getParent();
+}
+
+static MemoryAddress_ty
+parse_ptr(const MemoryObjectPtr ptr, state_ptr state) {
+    assert(ptr->is_pointer() && "Pointer object expected");
+    auto pointed_addr = ptr->get_ptr_value();
+    auto pointed_obj = state->memory.get_object(pointed_addr);
+    if (!pointed_obj->is_pointer()) {
+        return pointed_addr;
+    }
+    auto addr = parse_ptr(pointed_obj, state);
+    for (auto& offset : pointed_addr.offset) {
+        addr.offset.push_back(offset);
+    }
+    return addr;
+}
+
+static MemoryAddress_ty
+parse_gep(llvm::GetElementPtrInst* gep, state_ptr state) {
+    // This function parses the GEP instruction and returns the memory address
+    // it points to, based on the operands and the current state.
+    auto& z3ctx = state->z3ctx;
+    auto ptr_operand = gep->getPointerOperand();
+    auto pointed_obj = state->memory.get_object_pointed_by(ptr_operand);
+
+    std::vector<Expression> offsets;
+
+    MemoryAddress_ty addr;
+    if (!pointed_obj->is_pointer()) {
+        auto ptr_obj = state->memory.get_object(ptr_operand);
+        addr = ptr_obj->get_ptr_value();
+    } else {
+        addr = parse_ptr(pointed_obj, state);
+    }
+
+    for (auto& idx : gep->indices()) {
+        auto idx_value = state->evaluate(idx.get());
+        addr.offset.push_back(idx_value);
+    }
+    return addr;
+}
+
+std::vector<state_ptr>
+AInstructionLoad::execute(state_ptr state) {
+    auto load_inst = dyn_cast<llvm::LoadInst>(inst);
+    auto ptr = load_inst->getPointerOperand();
+    state_ptr new_state = std::make_shared<State>(*state);
+
+    auto addr = parse_ptr(new_state->memory.get_object(ptr), new_state);
+    auto pointed_obj = new_state->memory.get_object(addr);
+    assert(pointed_obj && "Pointed object must exist");
+
+    auto load_value = pointed_obj->read(addr.offset);
+    new_state->memory.put_temp(inst, load_value);
+    new_state->step_pc();
+    return {new_state};
+}
+
+bool
+AInstructionLoad::is_invariant(loop_state_ptr state, llvm::Loop* loop, llvm::Value* ptr) const {
+    auto addr = parse_ptr(state->memory.get_object(ptr), state);
+    auto pointed_obj = state->memory.get_object(addr);
+    for (auto bb : loop->blocks()) {
+        for (auto &inst : *bb) {
+            if (auto store_inst = llvm::dyn_cast<llvm::StoreInst>(&inst)) {
+                auto stored_ptr = store_inst->getPointerOperand();
+                auto stored_addr = parse_ptr(state->memory.get_object(stored_ptr), state);
+                if (pointed_obj == state->memory.get_object(stored_addr)) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+std::vector<state_ptr>
+AInstructionStore::execute(state_ptr state) {
+    auto store_inst = dyn_cast<llvm::StoreInst>(inst);
+    auto ptr = store_inst->getPointerOperand();
+    auto value = store_inst->getValueOperand();
+    // auto ptr_value = state->evaluate(ptr);
+    state_ptr new_state = std::make_shared<State>(*state);
+
+    auto pointer_obj = new_state->memory.get_object(ptr);
+
+    auto offset = pointer_obj->get_ptr_value().offset;
+
+    auto pointed_obj = new_state->memory.get_object_pointed_by(ptr);
+    auto value_expr = state->evaluate(value, pointed_obj->is_signed());
+    assert(pointed_obj && "Pointed object must exist");
+    pointed_obj->write(offset, value_expr);
+
+    new_state->step_pc();
+    return {new_state};
+}
+
+std::vector<state_ptr>
+AInstructionGEP::execute(state_ptr state) {
+    auto gep = dyn_cast_or_null<llvm::GetElementPtrInst>(inst);
+    assert(gep);
+    auto new_state = std::make_shared<State>(*state);
+    auto addr = parse_gep(gep, new_state);
+    auto target_obj = new_state->memory.get_object(addr);
+    if (target_obj->get_sizes().size() < addr.offset.size()) {
+        addr.offset = std::vector<Expression>(addr.offset.begin() + 1, addr.offset.end());
+    }
+    new_state->memory.put_temp(inst, addr);
+    // new_state->store_gep(gep);
+    new_state->step_pc();
+    return {new_state};
+}
+
+std::vector<state_ptr>
+AInstructionDebug::execute(state_ptr state) {
+    // Debug instructions are not executed, just skipped
+    if (auto dbg_declare = llvm::dyn_cast_or_null<llvm::DbgDeclareInst>(inst)) {
+        auto* var = dbg_declare->getVariable();
+        auto llvm_value = dbg_declare->getAddress();
+        assert(llvm_value->getType()->isPointerTy() && "Expected a pointer type for debug declare");
+        if (auto* diType = var->getType()) {
+            if (diType->getName().contains("unsigned char")) {
+                auto addr = parse_ptr(state->memory.get_object(llvm_value), state);
+                auto pointed_obj = state->memory.get_object(addr);
+                pointed_obj->set_signed(true);
+                state->append_path_condition(pointed_obj->get_value() >= state->z3ctx.int_val(0));
+                state->append_path_condition(pointed_obj->get_value() <= state->z3ctx.int_val(255));
+            } else if (diType->getName().contains("unsigned")) {
+                auto addr = parse_ptr(state->memory.get_object(llvm_value), state);
+                auto pointed_obj = state->memory.get_object(addr);
+                pointed_obj->set_signed(false);
+                state->append_path_condition(pointed_obj->get_value() >= state->z3ctx.int_val(0));
+            }
+        }
+    } else if (auto dbg_value = llvm::dyn_cast_or_null<llvm::DbgValueInst>(inst)) {
+        auto* llvm_value = dbg_value->getValue();
+        if (llvm_value->getType()->isPointerTy()) {
+            auto obj = state->memory.get_object_pointed_by(llvm_value);
+            auto var = dbg_value->getVariable();
+            auto base_size = var->getType()->getSizeInBits();
+            if (base_size == 64) {
+                auto ori_size = obj->get_sizes();
+                for (auto& size : ori_size) {
+                    size = size / size.ctx().int_val(2);
+                }
+                obj->set_sizes(ori_size);
+            }
+        } else if (!llvm::isa<llvm::Constant>(llvm_value)) {
+            if (auto* diType = dbg_value->getVariable()->getType()) {
+                auto obj = state->memory.get_object(llvm_value);
+                if (diType->getName().contains("unsigned char")) {
+                    obj->set_signed(false);
+                    state->append_path_condition(state->evaluate(llvm_value) >= state->z3ctx.int_val(0));
+                    state->append_path_condition(state->evaluate(llvm_value) <= state->z3ctx.int_val(255));
+                } else if (diType->getName().contains("unsigned")) {
+                    obj->set_signed(false);
+                    state->append_path_condition(state->evaluate(llvm_value) >= state->z3ctx.int_val(0));
+                }
+            }
+        }
+    } else {
+        // Other debug instructions are ignored
+        llvm::errs() << "Ignoring debug instruction: " << *inst << "\n";
+    }
+    state->step_pc();
+    return {state};
+}
+
+std::vector<state_ptr>
+AInstructionTrunc::execute(state_ptr state) {
+    auto trunc_inst = dyn_cast<llvm::TruncInst>(inst);
+    auto op = trunc_inst->getOperand(0);
+    auto op_value = state->evaluate(op);
+    auto& z3ctx = op_value.ctx();
+    z3::expr result(z3ctx);
+
+    state_ptr new_state = std::make_shared<State>(*state);
+    // new_state->write(inst, op_value);
+    // new_state->memory.allocate(inst, op_value);
+    new_state->memory.put_temp(inst, op_value);
+    new_state->step_pc();
+    return {new_state};
+}

@@ -1,0 +1,79 @@
+#include <dev/keyboard.h>
+#include <kernel.h>
+#include <lib/ring_buffer.h>
+#include <lib/spinlock.h>
+#include <stdint.h>
+#include <sys/irq.h>
+#include <sys/ps2.h>
+
+// This was Assisted with basic coding tools since I'm lazy
+// Index = scan code (Set 1), Value = ASCII or 0 for non-printables
+const char scancode_set1_ascii[128] = {
+    0, 27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b', '\t',
+    'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', 0,
+    'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`', 0, '\\',
+    'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0, '*', 0, ' '
+};
+
+const char scancode_set1_ascii_shift[128] = {
+    0, 0, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', 0, 0,
+    'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', 0, 0,
+    'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~', 0, '|',
+    'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0
+};
+
+#define KBD_RELEASE 1 << 7
+#define KBD_CODE_MASK 0b1111111
+
+#define KBD_LSHIFT 0x2A
+#define KBD_RSHIFT 0x36
+
+spinlock kbd_lock = SPINLOCK_INIT;
+ring_buffer kbd_buffer;
+bool shift = false;
+
+// FIXME: Don't assume the first scan code
+void keyboard_handler(int_context *frame) {
+    (void)frame;
+
+    uint8_t scan = ps2_read();
+    if (scan & KBD_RELEASE) {
+        // The scancode was released
+        // We reset the appropriate state
+        scan = scan & KBD_CODE_MASK;
+        if (scan == KBD_LSHIFT || scan == KBD_RSHIFT) {
+            shift = false;
+        }
+    } else {
+        // We don't need to mask 
+        if (scan == KBD_LSHIFT || scan == KBD_RSHIFT) {
+            shift = true;
+        } else {
+            char ch;
+            if (shift) {
+                ch = scancode_set1_ascii_shift[scan];
+            } else {
+                ch = scancode_set1_ascii[scan];
+            }
+            spinlock_acquire(&kbd_lock);
+            ring_buffer_write(&kbd_buffer, (uint8_t)ch);
+            spinlock_release(&kbd_lock);
+        }
+    }
+}
+char keyboard_read() {
+    while (ring_buffer_empty(&kbd_buffer)) {
+        asm("pause");
+    }
+    spinlock_acquire(&kbd_lock);
+    char ch = (char)ring_buffer_read(&kbd_buffer);
+    spinlock_release(&kbd_lock);
+    return ch;
+}
+
+void keyboard_init() {
+    kbd_buffer = ring_buffer_new();
+    irq_register_handler(33, keyboard_handler);
+
+    LOG("Keyboard Initialized");
+}

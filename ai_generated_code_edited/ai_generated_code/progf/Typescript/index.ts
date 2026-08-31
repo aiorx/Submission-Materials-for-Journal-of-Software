@@ -1,0 +1,91 @@
+// AUTO-Aided using common development resources to match your actual deck files
+
+import { Deck } from '../../types';
+
+import { ActionsDeck } from './actions';
+import { BodyDeck } from './body';
+import { ClothingDeck } from './clothing';
+import { ColorsDeck } from './colors';
+import { CommunicationDeck } from './communication';
+import { Daily_lifeDeck } from './daily_life';
+import { Dates_timeDeck } from './dates_time';
+import { EmotionsDeck } from './emotions';
+import { FamilyDeck } from './family';
+import { FoodDeck } from './food';
+import { GreetingsDeck } from './greetings';
+import { HealthDeck } from './health';
+import { HolidaysDeck } from './holidays';
+import { HouseDeck } from './house';
+import { NatureDeck } from './nature';
+import { NumbersDeck } from './numbers';
+import { PlacesDeck } from './places';
+import { ProfessionsDeck } from './professions';
+import { RoutinesDeck } from './routines';
+import { SchoolDeck } from './school';
+import { ShoppingDeck } from './shopping';
+import { SlangDeck } from './slang';
+import { SportsDeck } from './sports';
+import { TechnologyDeck } from './technology';
+import { TransportDeck } from './transport';
+import { TravelDeck } from './travel';
+import { WeatherDeck } from './weather';
+
+export {
+  ActionsDeck,
+  BodyDeck,
+  ClothingDeck,
+  ColorsDeck,
+  CommunicationDeck,
+  Daily_lifeDeck,
+  Dates_timeDeck,
+  EmotionsDeck,
+  FamilyDeck,
+  FoodDeck,
+  GreetingsDeck,
+  HealthDeck,
+  HolidaysDeck,
+  HouseDeck,
+  NatureDeck,
+  NumbersDeck,
+  PlacesDeck,
+  ProfessionsDeck,
+  RoutinesDeck,
+  SchoolDeck,
+  ShoppingDeck,
+  SlangDeck,
+  SportsDeck,
+  TechnologyDeck,
+  TransportDeck,
+  TravelDeck,
+  WeatherDeck
+};
+
+export const ALL_DECKS: Deck[] = [
+  ActionsDeck,
+  BodyDeck,
+  ClothingDeck,
+  ColorsDeck,
+  CommunicationDeck,
+  Daily_lifeDeck,
+  Dates_timeDeck,
+  EmotionsDeck,
+  FamilyDeck,
+  FoodDeck,
+  GreetingsDeck,
+  HealthDeck,
+  HolidaysDeck,
+  HouseDeck,
+  NatureDeck,
+  NumbersDeck,
+  PlacesDeck,
+  ProfessionsDeck,
+  RoutinesDeck,
+  SchoolDeck,
+  ShoppingDeck,
+  SlangDeck,
+  SportsDeck,
+  TechnologyDeck,
+  TransportDeck,
+  TravelDeck,
+  WeatherDeck,
+];

@@ -1,0 +1,1 @@
+<div class="bn-panel-subtitle">Supported via standard programming aids (o3, GPT-5 Thinking, Codex) and Manus</div>

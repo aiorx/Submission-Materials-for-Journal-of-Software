@@ -1,0 +1,59 @@
+{
+  "description": "Evaluation performance metrics for the Typescript GPTSniffer dataset, extracting only the overall mean and 10-fold cross-validation results for Accuracy and AUC.",
+  "summary": {
+    "accuracy_mean": 0.9602,
+    "auc_mean": 0.9882
+  },
+  "10_fold_cross_validation": [
+    {
+      "fold": 1,
+      "accuracy": 0.9782,
+      "auc": 0.9975
+    },
+    {
+      "fold": 2,
+      "accuracy": 0.9345,
+      "auc": 0.9916
+    },
+    {
+      "fold": 3,
+      "accuracy": 0.9825,
+      "auc": 0.9950
+    },
+    {
+      "fold": 4,
+      "accuracy": 0.9651,
+      "auc": 0.9877
+    },
+    {
+      "fold": 5,
+      "accuracy": 0.9563,
+      "auc": 0.9884
+    },
+    {
+      "fold": 6,
+      "accuracy": 0.9432,
+      "auc": 0.9747
+    },
+    {
+      "fold": 7,
+      "accuracy": 0.9561,
+      "auc": 0.9833
+    },
+    {
+      "fold": 8,
+      "accuracy": 0.9693,
+      "auc": 0.9953
+    },
+    {
+      "fold": 9,
+      "accuracy": 0.9649,
+      "auc": 0.9806
+    },
+    {
+      "fold": 10,
+      "accuracy": 0.9518,
+      "auc": 0.9875
+    }
+  ]
+}

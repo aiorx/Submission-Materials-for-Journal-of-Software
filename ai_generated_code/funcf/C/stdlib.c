@@ -1,0 +1,34 @@
+```c
+double chatgpt_atof(const char *str)
+{
+	// This function was Drafted using common development resources using the following prompt:
+	// Can you write an implementation for atof in C that doesn't use anything from the C standard library? The atof function takes a const char* and produces a double result, with the double being the value of the number represented by the string. Also make sure it handles any invalid characters and returns 0 if it finds any invalid characters or syntax
+	double result = 0.0;
+	double fraction = 0.1;
+	int sign = 1;
+	int state = 0; // 0 for integer part, 1 for fractional part
+	int invalid = 0; // Flag for invalid characters
+	
+	while (*str)
+	{
+		if (state == 0 && *str == '-') { sign = -1; }
+		else if (state == 0 && *str == '+') { } // Ignore the plus sign, if present
+		else if (*str >= '0' && *str <= '9')
+		{
+			if (state == 0) { result = result * 10.0 + (*str - '0'); }
+			else
+			{
+				result += fraction * (*str - '0');
+				fraction *= 0.1;
+			}
+		}
+		else if (*str == '.' && state == 0) { state = 1; }
+		else { invalid = 1; }
+		str++;
+	}
+	
+	if (invalid) { return 0.0; } // Invalid character encountered
+	
+	return result * sign;
+}
+```

@@ -1,0 +1,204 @@
+# The help text are Built using basic development resources-4, based on the source code of the menu (which does
+# not contain comments) and minimal prompting.
+
+menu_help = {
+    # Main Menus
+    "File": "Contains options for creating new windows or tabs, saving chat content, and closing the application.",
+    "Edit": "Provides options for manipulating text, such as cut, copy, paste, delete, and undo/redo actions.",
+    "View": "Allows you to customize the display of the application, including font size and visibility of different panes.",
+    "Navigate": "Provides options for moving through the chat, such as jumping to similar lines or moving between messages.",
+    "Chat": "Contains options for managing and controlling the chat, including completing lines, forking conversations, and cancelling models.",
+    "Query": "Allows you to adjust query parameters, such as max tokens and temperature.",
+    "Models": "Provides options for managing the GPT models used in the application.",
+    "Help": "Contains options for accessing application help, debug info, and about details.",
+
+    # File
+    "New Window": "Opens a new Thoughttree window, allowing you to work on multiple chats simultaneously.\nEach new window operates independently, enabling you to manage and organize your conversations more efficiently.",
+    "New Main Tab": "Opens a new main tab in the current window, providing a separate workspace within the same window.\nThis allows you to keep multiple chats organized and accessible without opening additional windows.",
+    "Import Shared Chat": "Imports a chat that has been shared with you, allowing you to view and interact with the conversation in your own Thoughttree window.\nBefore importing, ensure that you have the correct shared chat link or file.\nThis feature is useful for collaborating with others or for reviewing shared conversations.",
+    "Insert File": "Inserts the content of a file into the chat, allowing you to include external text or data in the conversation.\nThis feature is useful for importing text from other sources or for including additional information in the chat.",
+    "Open File": "Opens a file in the Thoughttree window, allowing you to view and interact with its content.\nThe file content is displayed in a new tab, enabling you to work with multiple files simultaneously.",
+    "Save File": "Saves the current chat content to a file, preserving the conversation for later reference.\nThe saved file can be opened in any text editor, allowing you to review or share the chat content outside of the Thoughttree application.",
+    "Save Chat": "Saves the entire chat content to a file, allowing you to store and review conversations later.\nThe saved file can be opened and edited in any text editor, making it easy to share or reference the chat content.",
+    "Save Message": "Saves a selected section of the chat to a file, useful for extracting specific parts of a conversation.",
+    "Save Selection": "Saves the selected text in the chat to a file, allowing you to save specific parts of the conversation for later reference or sharing.",
+    "Save Code Block": "Saves a selected code block to a file, enabling you to reuse or share code snippets.\nThe saved code block can be imported into other projects or shared with collaborators, streamlining the development process.",
+    "Close Tab": "Closes the current tab in the Thoughttree window, removing it from the workspace.",
+    "Close Empty Tab": "Closes the current tab if it is empty, helping to declutter your workspace.\nThis feature prevents the accumulation of unnecessary empty tabs, ensuring a clean and organized working environment.",
+    "Close Window": "Closes the current Thoughttree window, ending the current session.\nBefore closing, ensure that you have saved any important chat content to avoid losing your work.",
+    "Quit Thoughttree": "Exits the Thoughttree application, ending all active sessions.\nBefore quitting, ensure that you have saved any important chat content to avoid losing your work.",
+
+    # Edit:
+    "Cut": "Cuts the selected text and stores it in the clipboard, allowing you to move text within or between documents.",
+    "Copy": "Copies the selected text to the clipboard without removing it from the document, useful for duplicating content.",
+    "Paste": "Pastes the text from the clipboard at the cursor position, inserting copied or cut content.",
+    "Delete": "Deletes the selected text or the character at the cursor position without storing it in the clipboard.",
+    "Undo": "Reverts the last text edit, allowing you to correct mistakes or revert unwanted changes.",
+    "Redo": "Reapplies the previously undone text edit, restoring the text to its state before the undo action.",
+    "Select All": "Selects all the text in the current text widget, making it easy to copy, cut, or delete the entire content.\nThis feature is useful for quickly selecting large amounts of text or when you want to replace the entire content of the text widget.",
+    "Search with Google": "Searches the selected text on Google, providing quick access to search results for the highlighted text.",
+    "Find": "Utilize this feature to search for a specific phrase or term within the document. A search bar will appear where you can type in the term you're looking for.",
+    "Find Next": "This option allows you to search for the next occurrence of the term previously entered in the 'Find' function. It's a convenient way to navigate through the instances of the term in your document.",
+    "Find Previous": "Use this feature to navigate to the previous occurrence of the term you've searched for using the 'Find' function. It allows you to move backwards through the instances of the term in your document.",
+    "Cut History": "Inserts a separator between the past and current chat content, allowing you to keep track of past and current chat content",
+    "Insert Current Time": "Inserts the current date and time at the cursor position, useful for timestamping notes or messages.\nThe inserted timestamp is formatted as 'YYYY-MM-DD HH:MM:SS', providing a clear and concise representation of the current date and time.",
+    "Include Date in System Prompt": "Includes the current date in the system prompt, providing a reference for when the prompt was generated.\nThis feature is useful for tracking the date of specific prompts or for organizing your conversations based on the date.",
+    "Copy Title": "Copies the title of the current chat to the clipboard, allowing you to easily share or reference the chat title.\nThis feature is useful for sharing chat titles with collaborators, referencing chat titles in other documents, or for organizing your chats based on their titles.",
+
+    # View:
+    "Show Main Menu": "Toggles the visibility of the main menu. The main menu provides access to all the features and settings of the application. You can choose to hide it for a cleaner workspace or display it for easy access to the various options.",
+    "Show Status Bar": "Displays the status bar at the bottom of the application window. The status bar provides useful information about the current state of the application, such as the current model in use and other relevant parameters. You can hide it to maximize the chat area or display it to keep track of the application's status.",
+    "Show System Prompt": "Toggles the visibility of the system prompt, allowing you to hide or display the prompt as needed.\nHiding the system prompt can help declutter your workspace, while displaying the prompt provides context and guidance for the conversation.",
+    "Show Tree": "Toggles the visibility of the tree view, enabling you to show or hide the tree structure of your chats.\nThe tree view provides a visual representation of the chat hierarchy, making it easy to navigate and manage complex conversations.",
+    "Show Console": "Displays the console pane in the Thoughttree window, allowing you to view and interact with the console output of the chatbot model.",
+    "Count Tokens": "Counts the tokens in the current text, providing an estimate of the text's complexity and cost for text generation.\nToken count is an important factor when working with text generation services, as it can affect the cost and processing time for generating content.",
+    "Run Code Block": "Runs the selected code block, executing any embedded code within the chat.\nThis feature is useful for testing and debugging code snippets, as well as for executing commands or scripts directly within the chat environment.",
+    "Update Window Title": "Updates the window title based on the current chat, providing a clear identifier for the active chat.\nThis feature ensures that the window title accurately reflects the content of the chat, making it easier to manage and navigate multiple chats.",
+    "Increase Font Size": "Increases the font size of the text, making it easier to read.\nThis feature is especially useful for users with visual impairments or for working with high-resolution displays where the default font size may be too small.",
+    "Decrease Font Size": "Decreases the font size of the text, allowing you to fit more content on the screen.\nThis feature is useful for working with large documents or for users who prefer smaller font sizes for readability.",
+    "Reset Font Size": "Resets the font size to its default value, restoring the original text appearance.",
+    "Toggle Monospace": "Toggles between monospace and proportional fonts, allowing you to switch between fixed-width and variable-width characters.\nMonospace fonts are useful for aligning text, especially when working with code or tabular data, while proportional fonts provide a more natural reading experience for general text.",
+    "Toggle Scrolling Output": "Toggles automatic scrolling of the output, enabling you to control whether the output scrolls as new content is generated.\nWhen enabled, the output will automatically scroll to show the latest generated content.\nWhen disabled, the output will remain stationary, allowing you to review previous content without interruption.",
+    "Ring Bell When Finished": "Rings a bell when the text generation is completed, providing an audible notification of completion.\nThis feature is helpful for multitasking, as it allows you to focus on other tasks while waiting for the text generation to finish.",
+    "Toggle Wrap Lines": "Toggles line wrapping in the text widget, allowing you to control whether long lines wrap to the next line or extend off-screen.\nLine wrapping can improve readability by ensuring that text does not extend beyond the visible screen area, while disabling line wrapping can provide a more compact view of the text.",
+    "Generate Titles": "Generates titles for the current text, providing suggestions for descriptive headings.\nThis feature is useful for organizing your chats or for creating meaningful titles for sections of text, making it easier to navigate and understand the content.",
+    "Calculate Cost": "Calculates the cost of generating the current text, estimating the resources required for text generation.\nThis feature is useful for managing the cost and resource usage of text generation services, ensuring that you stay within your budget and resource limits.",
+    "Generate Title": "This option will automatically generate a title for your current document based on its content. This can be especially useful if you're struggling to come up with a descriptive title.",
+    "Show Hidden Prompts": "Displays any prompts that have been hidden in the chat, revealing the full conversation history.\nThis feature is useful for reviewing the context of the conversation or for revealing hidden content.",
+
+    # Navigate:
+    "Next Similar Line": "Jumps to the next line with similar content, allowing you to quickly navigate between related lines.",
+    "Previous Similar Line": "Jumps to the previous line with similar content, enabling you to move backward through related lines.",
+    "Next Message": "Jumps to the next message in the chat, providing a quick way to navigate between messages.\nThis feature is useful for reviewing previous conversations or for quickly moving through a chat to find specific messages or content.",
+    "Previous Message": "Jumps to the previous message in the chat, allowing you to move backward through messages.\nThis feature is useful for reviewing earlier parts of a conversation or for finding specific messages or content that occurred earlier in the chat.",
+
+    # Chat:
+    "Continue Line": "Continues the current text without starting a new line or paragraph, generating a seamless continuation of the conversation.\nThis feature is useful for generating fluid and continuous text, especially when the conversation does not require a line or paragraph break.",
+    "Next Line": "Completes the current text and starts a new line, continuing the conversation on a new line.",
+    "Next Paragraph": "Completes the current text and starts a new paragraph, providing a clear separation between ideas.",
+    "Continue Directly": "Continues the current text without starting a new line or paragraph, generating a seamless continuation of the conversation.",
+    "Fork Conversation": "Forks the current conversation into a new branch, allowing you to explore alternative paths in the chat.\nThis feature enables you to generate multiple responses or scenarios based on the current conversation, providing a way to test different ideas or approaches without affecting the main chat.",
+    "Insert Completion": "Inserts a generated completion into the chat, continuing the conversation with the output of the text generation model.\nThis feature is useful for generating responses or for expanding the conversation based on the current text.",
+    "Replace by Completion": "Replaces the current text with a generated completion, altering the conversation with the output of the text generation model.\nThis feature is useful for exploring alternative conversation paths or for correcting or modifying the current text.",
+    "Solve this Problem": "Attempts to generate a solution to the problem posed in the current text, using the text generation model to generate a problem-solving response.\nThis feature is useful for generating solutions or suggestions for problems or challenges posed in the chat.",
+    "Complete in Branch": "Completes the current text in a new conversation branch, generating text that diverges from the main conversation.\nThis feature allows you to explore alternative outcomes or responses without altering the original conversation, making it easy to compare and contrast different ideas.",
+    "Complete Alternatives": "Generates alternative completions for the current text, providing a variety of potential responses.\nThis feature enables you to explore multiple ways to continue the conversation, giving you greater flexibility and control over the chat content.",
+    "Complete 3 Times": "Generates 3 completions for the current text, providing three unique options for continuing the conversation.",
+    "Complete Multiple...": "Prompts for the number of completions to generate, allowing you to specify the desired number of alternatives.\nBy entering a custom number, you can generate a specific number of alternative completions, providing a tailored set of options for continuing the conversation.",
+    "Complete Multiple Again": "Generates the same number of completions as the last multiple completion, providing consistency in the number of alternatives.\nThis feature is useful for generating a consistent set of options across multiple completions, ensuring a similar level of variety in each set of alternatives.",
+    "Cancel": "Cancels the current text generation, stopping the generation process and discarding the generated content.",
+
+    # Prompt:
+    "Ask About This": "Use this feature to get more information about a specific term or phrase in your document. A new window will open with information related to the selected term.",
+    "Remove from Text": "Use this feature to delete a specific term or phrase from your document. You will be prompted to enter the term you wish to remove.",
+    "Select Text": "This feature allows you to highlight a specific portion of text in your document. You can then perform various actions on the selected text, such as copy, cut, or apply formatting.",
+    "Change Text": "This feature allows you to modify a specific term or phrase in your document. You will be prompted to enter the original term and the new term that will replace it.",
+    "Annotate Text": "This feature allows you to add annotations or comments to your document. These annotations will appear in the margins and won't affect the main text of the document.",
+    "Comment Text": "This feature allows you to add comments to your document. These comments are similar to annotations, but they are typically used for code documentation.",
+    "Iterate over Range": "This feature allows you to generate a sequence of numbers within a specified range. You can set the start, stop, and step values for the range.",
+
+    # Query:
+    "Max Tokens...": "Configures the maximum number of tokens for text generation, allowing you to control the length and complexity of generated text.\nBy setting a limit on tokens, you can ensure that the generated content stays within a specific length or complexity range, making it more manageable and easier to read.",
+    "Temperature...": "Configures the temperature for text generation, adjusting the randomness and creativity of the generated content.\nA higher temperature results in more diverse and creative output, while a lower temperature produces more focused and conservative text.\nThis setting allows you to fine-tune the balance between creativity and coherence in the generated content.",
+    "Increase Temperature": "Increases the temperature for text generation, resulting in more random and creative output.",
+    "Decrease Temperature": "Decreases the temperature for text generation, producing more focused and conservative output.",
+    "Temperature 0.0": "Sets the temperature for text generation to 0.0, generating deterministic and highly focused output.",
+    "API Key...": "Configures the API key for the text generation service, enabling access to the text generation features.\nBy entering a valid API key, you can connect to the text generation service and use its capabilities to generate content within the Thoughttree application.",
+
+    # Format:
+    "Bold": "Applies bold formatting to the selected text, making it stand out in the conversation.\nThis feature is useful for highlighting important text or for emphasizing certain parts of the conversation.",
+    "Strikethrough": "Applies strikethrough formatting to the selected text, indicating that the text has been deleted or is no longer relevant.\nThis feature is useful for marking text as completed or for indicating that certain parts of the conversation have been superseded or invalidated.",
+
+    # Text:
+    "Run Python Code": "This option allows you to execute Python code directly within your document. This is especially useful for testing small pieces of code without having to switch to a separate Python environment.",
+
+    # Models:
+    "ChatGPT gpt-3.5-turbo": "This is the default version of the ChatGPT (GPT-3.5) model.\n"
+                     "\n"
+                     "Most capable GPT-3.5 model and optimized for chat\n"
+                     "at 1/10th the cost of text-davinci-003.\n"
+                     "Will be updated with our latest model iteration\n"
+                     "2 weeks after it is released.\n"
+                     "\n"
+                     "Max tokens: 4,096 tokens\n"
+                     "Training data: Up to Sep 2021",
+    "ChatGPT gpt-3.5-turbo-0301": "This is a snapshot of the ChatGPT (GPT-3.5) model taken on March 1st.\n"
+                          "\n"
+                          "This model has the same capabilities as the default version\n"
+                          "but will not receive updates.\n"
+                          "\n"
+                          "Max tokens: 4,096 tokens\n"
+                          "Training data: Up to Sep 2021",
+    "ChatGPT gpt-3.5-turbo-0613": "This is a snapshot of the ChatGPT (GPT-3.5) model taken on June 13th.\n"
+                          "\n"
+                          "This model has the same capabilities as the default version\n"
+                          "but will not receive updates and will be deprecated 3 months after a new version is released.\n"
+                          "\n"
+                          "Max tokens: 4,096 tokens\n"
+                          "Training data: Up to Sep 2021",
+    "ChatGPT gpt-3.5-turbo-16k": "This is a variant of ChatGPT (GPT-3.5) with 4 times the context.\n"
+                         "\n"
+                         "This model has the same capabilities as the standard gpt-3.5-turbo model\n"
+                         "but can handle longer pieces of text.\n"
+                         "\n"
+                         "Max tokens: 16,384 tokens\n"
+                         "Training data: Up to Sep 2021",
+    "ChatGPT gpt-3.5-turbo-16k-0613": "This is a snapshot of the gpt-3.5-turbo-16k model taken on June 13th.\n"
+                              "\n"
+                              "This model has the same capabilities as the gpt-3.5-turbo-16k version\n"
+                              "but will not receive updates and will be deprecated 3 months after a new version is released.\n"
+                              "\n"
+                              "Max tokens: 16,384 tokens\n"
+                              "Training data: Up to Sep 2021",
+    "gpt-4": "This is the default version of the GPT-4 model.\n"
+             "\n"
+             "More capable than any GPT-3.5 model, able to do more complex tasks, and optimized for chat.\n"
+             "Will be updated with our latest model iteration 2 weeks after it is released.\n"
+             "\n"
+             "Max tokens: 8,192 tokens\n"
+             "Training data: Up to Sep 2021",
+    "gpt-4-0314": "This is a snapshot of the GPT-4 model taken on March 14th.\n"
+                  "\n"
+                  "This model has the same capabilities as the default version\n"
+                  "but will not receive updates.\n"
+                  "\n"
+                  "Max tokens: 8,192 tokens\n"
+                  "Training data: Up to Sep 2021",
+    "gpt-4-0613": "This is a snapshot of the GPT-4 model taken on June 13th.\n"
+                  "\n"
+                  "This model has the same capabilities as the default version\n"
+                  "but will not receive updates and will be deprecated 3 months after a new version is released.\n"
+                  "\n"
+                  "Max tokens: 8,192 tokens\n"
+                  "Training data: Up to Sep 2021",
+    "gpt-4-32k": "This is a variant of GPT-4 with 4 times the context.\n"
+                 "\n"
+                 "This model has the same capabilities as the base gpt-4 model\n"
+                 "but can handle longer pieces of text.\n"
+                 "Will be updated with our latest model iteration.\n"
+                 "\n"
+                 "Max tokens: 32,768 tokens\n"
+                 "Training data: Up to Sep 2021",
+    "gpt-4-32k-0613": "This is a snapshot of the gpt-4-32k model taken on June 13th.\n"
+                      "\n"
+                      "This model has the same capabilities as the gpt-4-32k version\n"
+                      "but will not receive updates and will be deprecated 3 months after a new version is released.\n"
+                      "\n"
+                      "Max tokens: 32,768 tokens\n"
+                      "Training data: Up to Sep 2021",
+
+    "gpt-3.5-turbo-instruct-0914": "This is a specific version of the GPT-3.5 Turbo model, which has been instructed to perform a certain task. This model is optimized for tasks that require detailed instructions and can generate high-quality text at a lower cost.",
+    "gpt-3.5-turbo-instruct": "This is a version of the GPT-3.5 Turbo model that has been trained to follow instructions. You can use this model to perform tasks that require a specific sequence of steps or actions.",
+    "Reload Available Models": "Refreshes the list of available models for text generation."
+                               "This is useful if it failed at program start.",
+    # Help:
+    "Text Keymap": "This feature allows you to customize the keyboard shortcuts used in the text editor. You can assign specific actions to different key combinations according to your preference.",
+    "Technical documentation": "This feature provides you with a detailed guide on how to use the various features and functions of the application. It's a handy resource if you're unsure about how to perform certain tasks.",
+    "OpenAI Chat API": "This feature connects you to the OpenAI Chat API, which enables you to use advanced AI models for generating human-like text. This can be useful for creating conversational agents, drafting emails, writing code, and more.",
+    "GPT Models": "This feature provides you with information about the various versions of the GPT (Generative Pretrained Transformer) models available for use. This includes details about their capabilities, limitations, and optimal use cases.",
+    "OpenAI Pricing": "This feature directs you to the pricing page of OpenAI, where you can find information about the costs associated with using various AI models and services.",
+    "Model Usage": "This feature provides you with detailed statistics about your usage of the AI models. This includes the number of tokens generated, the cost incurred, and other relevant usage data.",
+    "Test": "Runs a test function, useful for debugging and experimentation.",
+    "Debug Info": "Displays debug information, providing insights into the internal workings of the application.",
+    "About": "Displays information about the Thoughttree application, including version and developer details.",
+}

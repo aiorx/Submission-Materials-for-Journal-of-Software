@@ -1,0 +1,99 @@
+#!/bin/python
+# Copyright (C) 2009-2011 Andy Spencer <andy753421@gmail.com>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# This script was Aided using common development resources to reduce the 'data/borders.txt' resolution.
+# In other words, this will reduce the number of points in state borders, reducing the application install size and CPU / GPU usage when rendering
+# frames
+# Use: ./reduce-borders-file-resolution.py ../borders.txt ../borders-new.txt 0.001
+import sys
+import math
+
+def latlon_to_xyz(lat, lon):
+    """Convert latitude and longitude to 3D Cartesian coordinates."""
+    lat, lon = math.radians(lat), math.radians(lon)
+    x = math.cos(lat) * math.cos(lon)
+    y = math.cos(lat) * math.sin(lon)
+    z = math.sin(lat)
+    return (x, y, z)
+
+def distance_point_to_line(point, start, end):
+    """Calculate the perpendicular distance from a point to a line segment in 3D."""
+    if start == end:
+        return math.dist(point, start)
+
+    x0, y0, z0 = point
+    x1, y1, z1 = start
+    x2, y2, z2 = end
+
+    num = math.sqrt(((y2 - y1) * (z0 - z1) - (z2 - z1) * (y0 - y1))**2 +
+                    ((z2 - z1) * (x0 - x1) - (x2 - x1) * (z0 - z1))**2 +
+                    ((x2 - x1) * (y0 - y1) - (y2 - y1) * (x0 - x1))**2)
+    den = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2 + (z2 - z1) ** 2)
+    return num / den
+
+def rdp(points, epsilon):
+    """Ramer-Douglas-Peucker algorithm to reduce points."""
+    if len(points) < 3:
+        return points
+
+    max_dist = 0
+    index = 0
+    start, end = points[0], points[-1]
+
+    for i in range(1, len(points) - 1):
+        dist = distance_point_to_line(points[i], start, end)
+        if dist > max_dist:
+            index, max_dist = i, dist
+
+    if max_dist > epsilon:
+        left = rdp(points[:index+1], epsilon)
+        right = rdp(points[index:], epsilon)
+        return left[:-1] + right
+    else:
+        return [start, end]
+
+def process_line(line, epsilon):
+    """Process a single line of state border data."""
+    parts = line.strip().split('\t')
+    if len(parts) < 2:
+        return line  # Invalid line, return as is
+
+    state, coords = parts[0], parts[1]
+    latlon_points = [tuple(map(float, p.split(','))) for p in coords.split()]
+    xyz_points = [latlon_to_xyz(lat, lon) for lat, lon in latlon_points]
+
+    reduced_xyz = rdp(xyz_points, epsilon)
+    reduced_latlon = [(math.degrees(math.asin(z)), math.degrees(math.atan2(y, x))) for x, y, z in reduced_xyz]
+    reduced_coords = ' '.join(f"{p[0]:.6f},{p[1]:.6f}" for p in reduced_latlon)
+    return f"{state}\t{reduced_coords}\n"
+
+def main(input_file, output_file, epsilon):
+    """Main function to process the entire file."""
+    with open(input_file, 'r') as infile, open(output_file, 'w') as outfile:
+        for line in infile:
+            outfile.write(process_line(line, epsilon))
+
+if __name__ == "__main__":
+    if len(sys.argv) != 4:
+        print(f"Usage: {sys.argv[0]} <input_file> <output_file> <epsilon>")
+        sys.exit(1)
+
+    input_file = sys.argv[1]
+    output_file = sys.argv[2]
+    epsilon = float(sys.argv[3])
+
+    main(input_file, output_file, epsilon)
+

@@ -1,0 +1,64 @@
+from fastapi import APIRouter, HTTPException
+from app.models.message import Message, MessageResponse
+from app.models.request_models import QueryRequest, CreateChatRequest
+from app.models.response_models import ChatResponse
+from app.controllers.chat_controller import ChatController
+from app.controllers.model_controller import ModelController
+
+router = APIRouter(prefix="/api/chat", tags=["chat"])
+model_controller = ModelController()
+chat_controller = ChatController()
+
+@router.post("/", response_model=MessageResponse)
+async def send_message(message: Message):
+    try:
+        # Add your chat logic here
+        response = MessageResponse(
+            content=f"Received your message: {message.content}"
+        )
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/generate", response_model=ChatResponse)
+async def generate_chat_response(request: QueryRequest):
+    """Generate a chat response using the specified model"""
+    try:
+        result = await model_controller.generate_response(request)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return ChatResponse(response=result["response"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/health")
+async def health_check():
+    return {"status": "healthy"}
+
+@router.get("/test")
+async def test_endpoint():
+    return {"message": "API is working correctly!"}
+
+###############
+
+@router.post("/threads")
+async def create_chat(request: CreateChatRequest):
+    """Create a new chat thread"""
+    return await chat_controller.create_chat(request)
+
+@router.get("/threads")
+async def list_chats():
+    """Get all chat threads"""
+    return await chat_controller.get_chats()
+
+@router.get("/threads/{chat_id}/messages")
+async def get_chat_messages(chat_id: str):
+    """Get messages for a specific chat thread"""
+    return await chat_controller.get_chat_messages(chat_id)
+
+@router.post("/query")
+async def query_model(request: QueryRequest):
+    """Send a query to the model and store the conversation"""
+    return await chat_controller.handle_query(request)
+
+# Assisted using common GitHub development utilities

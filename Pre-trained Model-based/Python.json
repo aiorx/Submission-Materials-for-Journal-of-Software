@@ -1,0 +1,59 @@
+{
+  "description": "Evaluation performance metrics for the Python GPTSniffer dataset, extracting only the overall mean and 10-fold cross-validation results for Accuracy and AUC.",
+  "summary": {
+    "accuracy_mean": 0.9016,
+    "auc_mean": 0.964
+  },
+  "10_fold_cross_validation": [
+    {
+      "fold": 1,
+      "accuracy": 0.9124,
+      "auc": 0.9714
+    },
+    {
+      "fold": 2,
+      "accuracy": 0.8685,
+      "auc": 0.9368
+    },
+    {
+      "fold": 3,
+      "accuracy": 0.9124,
+      "auc": 0.9816
+    },
+    {
+      "fold": 4,
+      "accuracy": 0.9084,
+      "auc": 0.9602
+    },
+    {
+      "fold": 5,
+      "accuracy": 0.9044,
+      "auc": 0.9642
+    },
+    {
+      "fold": 6,
+      "accuracy": 0.8924,
+      "auc": 0.9646
+    },
+    {
+      "fold": 7,
+      "accuracy": 0.9163,
+      "auc": 0.9735
+    },
+    {
+      "fold": 8,
+      "accuracy": 0.9283,
+      "auc": 0.9839
+    },
+    {
+      "fold": 9,
+      "accuracy": 0.8805,
+      "auc": 0.9512
+    },
+    {
+      "fold": 10,
+      "accuracy": 0.892,
+      "auc": 0.9529
+    }
+  ]
+}

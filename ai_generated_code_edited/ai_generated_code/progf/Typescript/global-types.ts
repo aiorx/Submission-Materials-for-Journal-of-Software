@@ -1,0 +1,19 @@
+// Supported via standard GitHub programming aids
+// Global scope detection utility for browser extension compatibility
+
+/**
+ * Gets the appropriate global scope object for the current environment
+ * @returns The global object (window, self, or global)
+ */
+export function getGlobalScope(): typeof globalThis {
+  if (typeof window !== 'undefined') {
+    return window as unknown as typeof globalThis;
+  }
+  if (typeof self !== 'undefined') {
+    return self as unknown as typeof globalThis;
+  }
+  if (typeof global !== 'undefined') {
+    return global as unknown as typeof globalThis;
+  }
+  throw new Error('No global scope available');
+}

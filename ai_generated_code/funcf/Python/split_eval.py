@@ -1,0 +1,10 @@
+```python
+def quaternion_to_yaw(x, y, z, w):  # Written with routine coding tools-4
+    """
+    Convert a quaternion into yaw (rotation around z-axis in radians)
+    """
+    t3 = +2.0 * (w * z + x * y)
+    t4 = +1.0 - 2.0 * (y * y + z * z)
+    yaw_z = math.atan2(t3, t4)
+    return yaw_z
+```

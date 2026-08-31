@@ -1,0 +1,89 @@
+from fastapi import APIRouter, HTTPException, Query, Request, Body
+from typing import List, Optional, Dict, Any
+
+from ..controllers.chat_controller import ChatController
+from ..models.chat_schemas import ChatThread, ChatRequest, ChatResponse, Message
+
+router = APIRouter()
+
+@router.post("/chat", response_model=ChatThread)
+async def chat(request_data: Dict[Any, Any] = Body(...)):
+    """
+    Process a chat message. Creates a new thread if thread_id is not provided.
+    Returns the updated or created chat thread.
+    
+    This endpoint accepts either a ChatRequest model or a raw JSON with "message" or "prompt" fields.
+    """
+    try:
+        # Check if we have a thread_id
+        thread_id = request_data.get("thread_id")
+        
+        # Check if we need to map "prompt" to "message" (for compatibility)
+        message = request_data.get("message") or request_data.get("prompt")
+        if not message:
+            raise HTTPException(status_code=422, 
+                               detail="Either 'message' or 'prompt' field is required")
+        
+        # Get other fields
+        model = request_data.get("model")
+        if not model:
+            raise HTTPException(status_code=422, detail="'model' field is required")
+        
+        user_id = request_data.get("user_id")
+        
+        # Process the request
+        if thread_id:
+            # Continue an existing thread
+            thread = await ChatController.add_message_to_thread(
+                thread_id=thread_id,
+                message=message,
+                model=model
+            )
+        else:
+            # Create a new thread
+            thread = await ChatController.create_thread(
+                message=message,
+                model=model,
+                user_id=user_id
+            )
+        
+        return thread
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/chat/threads", response_model=List[ChatThread])
+async def get_chat_threads(
+    user_id: Optional[str] = None,
+    limit: int = Query(20, ge=1, le=100)
+):
+    """Get all chat threads for a user, or all threads if no user_id is provided"""
+    try:
+        return await ChatController.get_all_threads(user_id, limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/chat/thread/{thread_id}", response_model=ChatThread)
+async def get_chat_thread(thread_id: str):
+    """Get a specific chat thread by ID"""
+    try:
+        return await ChatController.get_thread(thread_id)
+    except Exception as e:
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail="Chat thread not found")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/chat/thread/{thread_id}", response_model=dict)
+async def delete_chat_thread(thread_id: str):
+    """Delete a specific chat thread by ID"""
+    try:
+        success = await ChatController.delete_thread(thread_id)
+        return {"success": success, "message": "Thread deleted successfully"}
+    except Exception as e:
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail="Chat thread not found")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Assisted using common GitHub development utilities

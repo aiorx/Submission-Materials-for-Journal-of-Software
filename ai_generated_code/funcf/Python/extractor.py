@@ -1,0 +1,22 @@
+# This is Aided with basic GitHub coding tools
+    ROOTFS_DIRS = [
+        "squashfs-root",
+        "jffs2-root",
+        "romfs-root",
+        "ubi-root",
+        "ubifs-root",
+        "yaffs2-root",
+        "yaffs-root",
+        "ext2-root",
+        "ext3-root",
+        "ext4-root",
+        "vfat-root",
+        "ntfs-root",
+        "f2fs-root",
+        "btrfs-root",
+        "jffs-root",
+        "cramfs-root",
+        "minix-root",
+        "hfs-root",
+        "hfsplus-root",
+    ]

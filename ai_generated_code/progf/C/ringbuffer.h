@@ -1,0 +1,90 @@
+/**
+ * @file ringbuffer.h
+ * @author SpaceBaker (https://github.com/SpaceBaker)
+ * @author ChatGPT (https://github.com/SpaceBaker)
+ * @brief This C module implements a simple ring buffer (circular buffer),
+ * a data structure that efficiently manages a fixed-size buffer in a circular manner.
+ *
+ * @note The code was autoAided using common development resources.
+ * @version 0.1
+ * @date 2024-08-14
+ * 
+ * @copyright Copyright (c) 2024
+ * 
+ */
+
+#ifndef RINGBUFFER_H
+#define RINGBUFFER_H
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+
+
+typedef struct ringBuffer {
+    uint32_t head;
+    uint32_t tail;
+    uint32_t size;
+    uint8_t *buffer;
+} ringbuffer_t;
+
+/**
+ * @brief Initializes the ring buffer with the given size
+ * 
+ * @param rb        Pointer to the ring buffer object
+ * @param buffer    Pointer to the actual buffer
+ * @param size      Size of the buffer
+ */
+void ringbuffer_init(ringbuffer_t *rb, uint8_t *buffer, uint32_t size);
+
+/**
+ * @brief Resets the ring buffer to empty
+ * 
+ * @param rb Pointer to the ring buffer object
+ */
+void ringbuffer_reset(ringbuffer_t *rb);
+
+/**
+ * @brief Adds an element to the ring buffer
+ * 
+ * @param rb    Pointer to the ring buffer object
+ * @param item  The data to add to the buffer
+ * @return uint8_t  error code : 0 is ok, else is error
+ */
+uint8_t ringbuffer_put(ringbuffer_t *rb, uint8_t item);
+
+/**
+ * @brief Removes and returns the tail element from the ring buffer
+ * 
+ * @param rb        Pointer to the ring buffer object
+ * @return uint8_t  The element or -1 if the buffer is empty
+ */
+uint8_t ringbuffer_get(ringbuffer_t *rb);
+
+/**
+ * @brief Returns the last element added to the ring buffer
+ * 
+ * @param rb 
+ * @return uint8_t 
+ */
+uint8_t ringbuffer_peek(ringbuffer_t *rb);
+
+/**
+ * @brief Checks if the ring buffer is empty
+ * 
+ * @param rb     Pointer to the ring buffer object 
+ * @return true  is empty
+ * @return false is not empty
+ */
+bool ringbuffer_isEmpty(ringbuffer_t *rb);
+
+/**
+ * @brief Checks if the ring buffer is full
+ * 
+ * @param rb     Pointer to the ring buffer object 
+ * @return true  is full
+ * @return false is not full
+ */
+bool ringbuffer_isFull(ringbuffer_t *rb);
+
+#endif // RINGBUFFER_H

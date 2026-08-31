@@ -1,0 +1,130 @@
+// Bitmap.cpp
+
+#include "Bitmap.h"
+#include "Image.h"
+#include <iostream>
+#include <vector>
+#include <string>
+#include <cstdint>
+#include <fstream>
+#include <ios>
+#include <regex>
+
+using namespace std;
+
+Bitmap::Bitmap(const Image& image) {
+    this->image = image;
+
+    // calculate padding
+    padding = Bitmap::calculatePadding(image.getRowLength());
+    int paddedRowLength = image.getRowLength() + padding;
+
+    // set bitmap information header
+    bmih.width = image.getWidth();
+    bmih.height = image.getHeight();
+    bmih.imageSize = paddedRowLength * image.getHeight();
+    // set file information header
+    bmfh.offSet = sizeof(bmfh) + sizeof(bmih);
+    bmfh.size = bmfh.offSet + bmih.imageSize;
+}
+
+void Bitmap::download(const string& path) {
+
+    if (!Bitmap::isValidPath(path)) {
+         throw ios_base::failure("invalid path to .bmp file");
+    }
+
+    // open / create file to write binary data into
+    ofstream output(path.c_str(), ios::binary);
+
+    // error opening / creating file
+    if (!output) {
+        throw ios_base::failure("could not open / create file");
+    }
+
+    // write headers
+    // & - the address-of operator
+    // reinterpret_cast<unsigned char*>(&structInstance) - converts the pointer to a structure to a pointer of characters
+    // ie, it causes the compiler the treat the underlying bits of the structure as if they were characters (1 byte chunks of data)
+    // allowing it to be written byte by byte into a file
+    output.write(reinterpret_cast<const char*>(&bmfh), sizeof(bmfh));
+    output.write(reinterpret_cast<const char*>(&bmih), sizeof(bmih));
+
+    // write pixel data with padding (bottom-to-top order)
+    vector<uint8_t> paddingBytes(padding, 0);
+    for (int rowIndex = image.getHeight() - 1; rowIndex >= 0; rowIndex--) {
+        output.write(reinterpret_cast<const char*>(image.getRowAddress(rowIndex)), image.getRowLength());
+        output.write(reinterpret_cast<const char*>(paddingBytes.data()), padding);
+    }
+
+    output.close();
+}
+
+Image Bitmap::load(const string& path) {
+
+    if (!Bitmap::isValidPath(path)) {
+        throw ios_base::failure("invalid path to .bmp file");
+    }
+
+    BitmapFileHeader bmfh;
+    BitmapInfoHeader bmih;
+    ifstream input(path.c_str(), ios::binary);
+
+    if (!input) {
+        throw ios_base::failure("could not read file");
+    }
+
+    // read file information header
+    // treat header struct as array of characters and read the appropriate number of bytes
+    // (in this case 14) into the structure
+    input.read(reinterpret_cast<char*>(&bmfh), sizeof(bmfh));
+
+    // determine if the specified file is a bmp file
+    if(bmfh.fileType != 0x4D42) {
+        throw ios_base::failure("not a .bmp file");
+    }
+
+    // read bitmap information header
+    input.read(reinterpret_cast<char*>(&bmih), sizeof(bmih));
+
+    // create image of correct size
+    Image image(bmih.width, bmih.height);
+
+    // calculate padding
+    int padding = Bitmap::calculatePadding(image.getRowLength());
+
+    // jump to pixel data
+    input.seekg(bmfh.offSet, input.beg);
+
+    // read each row of pixel data from the bitmap
+    // the first row of the bitmap pixel data corresponds to the last row of the image pixel data
+    // discard padding on each row
+    for (int row = 1; row <= bmih.height; row++) {
+        input.read(reinterpret_cast<char*>(image.getRowAddress(bmih.height - row)), image.getRowLength());
+        input.ignore(padding);
+    }
+
+    input.close();
+    return image;
+}
+
+// =============================================================================================== //
+// ==================================== STATIC HELPER METHODS ==================================== //
+// =============================================================================================== //
+int Bitmap::calculatePadding(int rowLength) {
+    int paddedRowLength = rowLength;
+    while (paddedRowLength % 4 != 0) {
+        paddedRowLength++;
+    }
+    return paddedRowLength - rowLength;
+}
+
+bool Bitmap::isValidPath(const string& path) {
+    // SOURCE: https://www.geeksforgeeks.org/regex-regular-expression-in-c/#
+    // DESCRIPTION: how to use regex in c++
+    // regex Aided using common development resources using the prompt: "regex to match valid path poinintg to .bmp file"
+    // R prefix indicates that the regex should be interpreted literally, so a \ is not interpreted as an escape character
+    string pattern = R"(^(?:[a-zA-Z]:\\|\/)?(?:[^<>:\"|?*\r\n]+[\/\\])*[^<>:\"|?*\r\n]+\.bmp$)";
+    regex pathToBmp(pattern);
+    return regex_match(path, pathToBmp);
+}

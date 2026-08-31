@@ -1,0 +1,50 @@
+# ocr_app.py
+
+"""
+The code below was Supported via standard programming aids o3-mini-high, only by two interactions after feeding the README.md file.
+Prompt1: Using Slowlette, write an API server that accepts an image file by POST, performs OCR, and returns the text in JSON.
+Prompt2: Add an option to specifiy the language
+
+To install external libraries:
+  sudo apt install tesseract-ocr
+  pip install pytesseract
+To run:
+  curl -X POST --data-binary "@sample.jpg" -H "Content-Type: image/jpeg"  http://localhost:8000/ocr
+"""
+
+"""
+AI's intermediate steps
+-----------------------
+Understanding the task: I'm piecing together a Slowlette application that processes uploaded image files using OCR, and I’ll need to provide an example code.
+
+Choosing the tools: I'm deciding between pytesseract and possibly another OCR library for processing uploaded images. Considering Slowlette for micro-framework needs and file upload handling.
+
+Examining file uploads: I’m mapping out how to parse file uploads in Slowlette, though the documentation lacks explicit details. I’m considering using fastapi.UploadFile to streamline this process.
+
+Understanding Slowlette's constraints: Slowlette supports handling POST requests with bytes but must handle multipart/form-data for file uploads. This requires specific parsing techniques to manage file uploads correctly.
+
+Deciding on parsing methods: I'm leaning towards using pytesseract with an image file uploaded as raw bytes. Considering additional libraries for multipart form data, but documentation lacks details on multipart handling.
+"""
+
+
+import slowlette
+from slowlette import Response
+from PIL import Image
+import pytesseract
+import io
+
+class App(slowlette.App):
+    @slowlette.post('/ocr')
+    def perform_ocr(self, file: bytes, lang: str = 'eng'):
+        try:
+            image = Image.open(io.BytesIO(file))
+            extracted_text = pytesseract.image_to_string(image, lang=lang)
+        except Exception as e:
+            return Response(f"Error processing image: {e}", status=400)
+        
+        return {"text": extracted_text}
+
+app = App()
+
+if __name__ == '__main__':
+    app.run()

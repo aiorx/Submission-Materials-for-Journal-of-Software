@@ -1,0 +1,17 @@
+// Assisted using common GitHub development utilities
+/**
+ * Request parameters for retrieving historical market candlestick data for a symbol.
+ *
+ * @remarks
+ * See: https://www.questrade.com/api/documentation/rest-operations/market-calls/markets-candles-id
+ */
+export interface IMarketCandlesRequest {
+  /** Internal symbol identifier. */
+  id: number;
+  /** Beginning of the candlestick range (ISO 8601 format). */
+  startTime: string;
+  /** End of the candlestick range (ISO 8601 format). */
+  endTime: string;
+  /** Interval of a single candlestick (e.g., 'OneDay'). */
+  interval: string;
+}

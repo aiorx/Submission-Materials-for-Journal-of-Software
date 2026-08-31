@@ -1,0 +1,219 @@
+# viewer for the csv files written by SerialDataPlotter
+# almost entirely Assisted using common GitHub development aids, only minor adjustments
+import sys
+import pandas as pd
+from PyQt5.QtWidgets import QMainWindow, QFileDialog, QAction, QInputDialog, QWidget, QVBoxLayout, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QCheckBox, QPushButton, QColorDialog, QDialogButtonBox, QColorDialog
+from PyQt5.QtGui import QColor
+import PyQt5.QtWidgets as QtWidgets
+import pyqtgraph as pg
+import pyqtgraph
+
+class OptionsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Plot Options')
+
+        layout = QVBoxLayout()
+
+        # Delimiter
+        h_layout = QHBoxLayout()
+        h_layout.addWidget(QLabel('Delimiter:'))
+        self.delimiter_edit = QLineEdit(',')
+        h_layout.addWidget(self.delimiter_edit)
+        layout.addLayout(h_layout)
+
+        # Use first column as x-axis
+        self.use_first_column_as_x_checkbox = QCheckBox('Use First Column as X-Axis')
+        layout.addWidget(self.use_first_column_as_x_checkbox)
+
+        # Show grid
+        self.show_grid_checkbox = QCheckBox('Show Grid')
+        layout.addWidget(self.show_grid_checkbox)
+
+        # Foreground color
+        h_layout = QHBoxLayout()
+        h_layout.addWidget(QLabel('Foreground Color:'))
+        self.foreground_color_button = QPushButton('Select Color')
+        self.foreground_color_button.clicked.connect(self.select_foreground_color)
+        h_layout.addWidget(self.foreground_color_button)
+        layout.addLayout(h_layout)
+
+        # Background color
+        h_layout = QHBoxLayout()
+        h_layout.addWidget(QLabel('Background Color:'))
+        self.background_color_button = QPushButton('Select Color')
+        self.background_color_button.clicked.connect(self.select_background_color)
+        h_layout.addWidget(self.background_color_button)
+        layout.addLayout(h_layout)
+
+        # Color order
+        h_layout = QHBoxLayout()
+        h_layout.addWidget(QLabel('Color Order (comma-separated):'))
+        self.color_order_edit = QLineEdit('r,g,b,c,m,y,k')
+        h_layout.addWidget(self.color_order_edit)
+        layout.addLayout(h_layout)
+
+        # Dialog buttons
+        self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+
+        self.setLayout(layout)
+
+    def select_foreground_color(self):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.foreground_color_button.setStyleSheet(f'background-color: {color.name()}')
+            self.foreground_color = color
+
+    def select_background_color(self):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.background_color_button.setStyleSheet(f'background-color: {color.name()}')
+            self.background_color = color
+
+class CSVPlotter(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.csvpath = None
+        self.use_first_column_as_x = False  # Default x-axis usage
+        self.delimiter = ";"  # Default delimiter
+        self.foreground_color = '#000000'  # Default foreground color
+        self.background_color = '#FFFFFF'  # Default background color
+        self.grid_visible = True  # Default grid visibility
+
+        # Pen colors for white background
+        self.pen_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        self.initUI()
+
+    def initUI(self):
+        self.setWindowTitle('CSV Plotter')
+        self.setGeometry(100, 100, 800, 600)
+
+        # Create a menu bar
+        menubar = self.menuBar()
+        fileMenu = menubar.addMenu('File')
+
+        # Add options menu item
+        optionsAction = QAction('Options', self)
+        optionsAction.triggered.connect(self.show_options_dialog)
+        fileMenu.addAction(optionsAction)
+
+        # Add open file menu item
+        openFileAction = QAction('Open CSV', self)
+        openFileAction.triggered.connect(self.open_file)
+        fileMenu.addAction(openFileAction)
+
+        # Add add file menu item
+        addFileAction = QAction('Add CSV', self)
+        addFileAction.triggered.connect(self.add_file)
+        fileMenu.addAction(addFileAction)
+
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.layout = QVBoxLayout(self.central_widget)
+
+    def show_options_dialog(self):
+        options_dialog = OptionsDialog(self)
+        options_dialog.delimiter_edit.setText(self.delimiter)
+        options_dialog.use_first_column_as_x_checkbox.setChecked(self.use_first_column_as_x)
+        options_dialog.show_grid_checkbox.setChecked(self.grid_visible)
+        
+        options_dialog.foreground_color = QColor(self.foreground_color)
+        options_dialog.background_color = QColor(self.background_color)
+        options_dialog.color_order_edit.setText(','.join(self.pen_colors))
+
+        if options_dialog.exec_() == QDialog.Accepted:
+            self.delimiter = options_dialog.delimiter_edit.text()
+            self.grid_visible = options_dialog.show_grid_checkbox.isChecked()
+            self.foreground_color = options_dialog.foreground_color.name()
+            self.background_color = options_dialog.background_color.name()
+            self.pen_colors = options_dialog.color_order_edit.text().split(',')
+            self.use_first_column_as_x = options_dialog.use_first_column_as_x_checkbox.isChecked()
+            if self.fileName:
+                # Clear existing plots
+                for i in reversed(range(self.layout.count())):
+                    widget = self.layout.itemAt(i).widget()
+                    if widget is not None:
+                        widget.deleteLater()
+                self.plot_csv()
+
+    def open_file(self, event=None):
+        for i in reversed(range(self.layout.count())):
+            widget = self.layout.itemAt(i).widget()
+            if widget is not None:
+                widget.deleteLater()
+        options = QFileDialog.Options()
+        self.fileName, _ = QFileDialog.getOpenFileName(self, "Open CSV File", "", "CSV Files (*.csv);;All Files (*)", options=options)
+        if self.fileName:
+            self.plot_csv()
+
+    def add_file(self):
+        options = QFileDialog.Options()
+        self.fileName, _ = QFileDialog.getOpenFileName(self, "Add CSV File", "", "CSV Files (*.csv);;All Files (*)", options=options)
+        if self.fileName:
+            self.plot_csv() 
+
+    def plot_csv(self):
+        data = pd.read_csv(self.fileName, delimiter=self.delimiter)
+
+        # Create a list to hold all plot widgets
+        plotWidgets = []
+        pg.setConfigOption('background', self.background_color)  # Set the default background color
+        pg.setConfigOption('foreground', self.foreground_color)
+
+        # Check if the first row contains column labels
+        if all(isinstance(col, str) for col in data.columns):
+            if self.use_first_column_as_x:
+                x_values = data.iloc[:, 0]
+                data = data.iloc[:, 1:]
+            else:
+                x_values = data.index
+
+            font = pg.QtGui.QFont()
+            font.setPixelSize(11)
+            
+            for i, column in enumerate(data.columns):
+                plotWidget = pg.PlotWidget()
+                plotWidget.setBackground(self.background_color)
+                plotWidget.getAxis('left').setPen(self.foreground_color)
+                plotWidget.getAxis('bottom').setPen(self.foreground_color)
+                plotWidget.showGrid(x=self.grid_visible, y=self.grid_visible)
+                plotWidget.getAxis('left').setStyle(tickFont = font)
+                plotWidget.getAxis('bottom').setStyle(tickFont = font)
+            
+                cplt = plotWidget.plot(x_values, data[column], name=column)
+                cplt.setPen(self.pen_colors[i % len(self.pen_colors)], width=2)
+                plotWidget.setLabel('left', f'<div style="font-size: 10pt">{column}<\div>')
+                if i == len(data.columns) - 1:
+                    plotWidget.setLabel('bottom', f'Samples | File:{self.fileName}' \
+                                        if not self.use_first_column_as_x else f'Time | File:{self.fileName}')
+                    #plotWidget.setLabel('bottom', 'Samples' if not self.use_first_column_as_x else data.columns[0], color=self.foreground_color)
+                self.layout.addWidget(plotWidget)
+                plotWidgets.append(plotWidget)
+        else: # support for non-string column labels
+            for i, column in enumerate(data.columns):
+                plotWidget = pg.PlotWidget()
+                plotWidget.setBackground(self.background_color)
+                plotWidget.getAxis('left').setPen(self.foreground_color)
+                plotWidget.getAxis('bottom').setPen(self.foreground_color)
+                plotWidget.showGrid(x=self.grid_visible, y=self.grid_visible)
+                pen_color = self.pen_colors[i % len(self.pen_colors)]
+                plotWidget.plot(data.index, data[column], pen=pen_color, name=f'Column {i+1}')
+                plotWidget.setLabel('left', f'Column {i+1}', color=self.foreground_color)
+                if i == len(data.columns) - 1:
+                    plotWidget.setLabel('bottom', 'Samples', color=self.foreground_color)
+                self.layout.addWidget(plotWidget)
+                plotWidgets.append(plotWidget)
+
+        # Link all x-axes
+        for plotWidget in plotWidgets[1:]:
+            plotWidget.setXLink(plotWidgets[0])
+
+if __name__ == '__main__':
+    app = pyqtgraph.mkQApp() #QtWidgets.QApplication(sys.argv)
+    mainWin = CSVPlotter()
+    mainWin.show()
+    sys.exit(app.exec_())

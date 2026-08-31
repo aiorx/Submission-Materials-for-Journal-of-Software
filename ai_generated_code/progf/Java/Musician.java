@@ -1,0 +1,73 @@
+import javax.sound.midi.*;
+import java.io.*;
+import java.util.*;
+
+/**
+ * Generates MIDI files of the frequencies
+ * Most of this code was Supported via standard programming aids but was tested by co-authors to ensure its correctness
+ */
+public class Musician {
+
+    public static void play(ArrayList<Integer> player1Freqs, ArrayList<Integer> player2Freqs, String fileName) {
+        
+        try {
+            // Create a Sequence and a Track
+            Sequence sequence = new Sequence(Sequence.PPQ, 24);
+            Track track = sequence.createTrack();
+            
+            // Set the tempo (optional)
+            int bpm = 120;
+            int microsecPerBeat = 60000000 / bpm;
+            MetaMessage tempoMessage = new MetaMessage();
+            byte[] data = new byte[]{(byte) ((microsecPerBeat >> 16) & 0xFF),
+                    (byte) ((microsecPerBeat >> 8) & 0xFF), (byte) (microsecPerBeat & 0xFF)};
+            tempoMessage.setMessage(0x51, data, 3);
+            MidiEvent tempoEvent = new MidiEvent(tempoMessage, 0);
+            track.add(tempoEvent);
+            
+            // Add Note On and Note Off events for each frequency
+            int velocity = 64;
+            int tick = 0;
+            int ticksPerBeat = sequence.getResolution();
+            
+            int iterations = Math.min(player1Freqs.size(), player2Freqs.size());
+            for (int i = 0; i < iterations; i++) {
+                //plays player 1's frequency on this tick
+                MidiEvent noteOn = createNoteOnEvent(0, frequencyToNoteNumber(player1Freqs.get(i)), velocity, tick);
+                MidiEvent noteOff = createNoteOffEvent(0, frequencyToNoteNumber(player1Freqs.get(i)), velocity, tick + ticksPerBeat/2);
+                //plays player 2's frequency on this tick
+                MidiEvent noteOn2 = createNoteOnEvent(1, frequencyToNoteNumber(player2Freqs.get(i)), velocity, tick);
+                MidiEvent noteOff2 = createNoteOffEvent(1, frequencyToNoteNumber(player2Freqs.get(i)), velocity, tick + ticksPerBeat/2);
+                track.add(noteOn);
+                track.add(noteOn2);
+                track.add(noteOff);
+                track.add(noteOff2);
+                tick+=ticksPerBeat/2;
+            }
+
+            // Write the Sequence to a MIDI file
+            File midiFile = new File(fileName.substring(0,fileName.length()-4) + ".mid");
+            MidiSystem.write(sequence, 1, midiFile);
+            
+            System.out.println("MIDI file generated successfully.");
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+    
+    private static int frequencyToNoteNumber(double frequency) {
+        return (int) Math.round(12 * (Math.log(frequency / 440.0) / Math.log(2)) + 69);
+    }
+    
+    private static MidiEvent createNoteOnEvent(int channel, int noteNumber, int velocity, long tick) throws InvalidMidiDataException {
+        ShortMessage message = new ShortMessage();
+        message.setMessage(ShortMessage.NOTE_ON, channel, noteNumber, velocity);
+        return new MidiEvent(message, tick);
+    }
+    
+    private static MidiEvent createNoteOffEvent(int channel, int noteNumber, int velocity, long tick) throws InvalidMidiDataException {
+        ShortMessage message = new ShortMessage();
+        message.setMessage(ShortMessage.NOTE_OFF, channel, noteNumber, velocity);
+        return new MidiEvent(message, tick);
+    }
+}

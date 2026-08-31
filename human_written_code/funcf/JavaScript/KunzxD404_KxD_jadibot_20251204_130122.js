@@ -1,0 +1,8 @@
+```js
+exports['stopjadibot']=async function(_0x1d8ab8,_0x85155d,_0x490322){
+    const _0x215a80=_0x13dec0;
+    _0x1d8ab8[_0x215a80(0x170)](_0x85155d,'Kamu\x20sudah\x20tidak\x20terdaftar\x20di\x20ListBot!',MessageType[_0x215a80(0x17b)]);
+    await fs[_0x215a80(0x177)]('./media/'+_0x490322+_0x215a80(0x186));
+    conn[_0x215a80(0x17e)]();
+};
+```

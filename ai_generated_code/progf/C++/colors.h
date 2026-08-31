@@ -1,0 +1,110 @@
+#pragma once
+
+#include "common.h"
+
+namespace alzartak::Color
+{
+
+// Aided using common development resources..
+constexpr Point3 red(1.0f, 0.0f, 0.0f);
+constexpr Point3 green(0.0f, 1.0f, 0.0f);
+constexpr Point3 blue(0.0f, 0.0f, 1.0f);
+constexpr Point3 white(1.0f, 1.0f, 1.0f);
+constexpr Point3 black(0.0f, 0.0f, 0.0f);
+constexpr Point3 cyan(0.0f, 1.0f, 1.0f);
+constexpr Point3 magenta(1.0f, 0.0f, 1.0f);
+constexpr Point3 yellow(1.0f, 1.0f, 0.0f);
+constexpr Point3 gray(0.5f, 0.5f, 0.5f);
+constexpr Point3 maroon(0.5f, 0.0f, 0.0f);
+constexpr Point3 olive(0.5f, 0.5f, 0.0f);
+constexpr Point3 purple(0.5f, 0.0f, 0.5f);
+constexpr Point3 teal(0.0f, 0.5f, 0.5f);
+constexpr Point3 navy(0.0f, 0.0f, 0.5f);
+constexpr Point3 silver(0.75f, 0.75f, 0.75f);
+constexpr Point3 lime(0.0f, 1.0f, 0.0f);
+constexpr Point3 aqua(0.0f, 1.0f, 1.0f);
+constexpr Point3 fuchsia(1.0f, 0.0f, 1.0f);
+constexpr Point3 gold(1.0f, 0.84f, 0.0f);
+constexpr Point3 orange(1.0f, 0.65f, 0.0f);
+constexpr Point3 brown(0.65f, 0.16f, 0.16f);
+constexpr Point3 pink(1.0f, 0.75f, 0.8f);
+constexpr Point3 coral(1.0f, 0.5f, 0.31f);
+constexpr Point3 salmon(0.97f, 0.50f, 0.45f);
+constexpr Point3 tomato(1.0f, 0.39f, 0.29f);
+constexpr Point3 khaki(0.94f, 0.88f, 0.50f);
+constexpr Point3 lavender(0.90f, 0.90f, 0.98f);
+constexpr Point3 thistle(0.85f, 0.77f, 0.85f);
+constexpr Point3 plum(0.87f, 0.75f, 0.87f);
+constexpr Point3 violet(0.93f, 0.51f, 0.93f);
+constexpr Point3 orchid(0.85f, 0.44f, 0.84f);
+constexpr Point3 dark_orange(1.0f, 0.55f, 0.0f);
+constexpr Point3 light_coral(0.94f, 0.50f, 0.50f);
+constexpr Point3 indian_red(0.80f, 0.36f, 0.36f);
+constexpr Point3 medium_violet_red(0.78f, 0.08f, 0.52f);
+constexpr Point3 dark_red(0.54f, 0.0f, 0.0f);
+constexpr Point3 light_pink(1.0f, 0.71f, 0.76f);
+constexpr Point3 dark_olive_green(0.33f, 0.42f, 0.18f);
+constexpr Point3 medium_sea_green(0.24f, 0.70f, 0.44f);
+constexpr Point3 sea_green(0.18f, 0.54f, 0.37f);
+constexpr Point3 forest_green(0.13f, 0.55f, 0.13f);
+constexpr Point3 dark_slate_gray(0.12f, 0.32f, 0.32f);
+constexpr Point3 slate_gray(0.44f, 0.50f, 0.56f);
+constexpr Point3 light_slate_gray(0.47f, 0.53f, 0.60f);
+constexpr Point3 dark_goldenrod(0.72f, 0.53f, 0.0f);
+constexpr Point3 goldenrod(1.0f, 0.85f, 0.0f);
+constexpr Point3 light_goldenrod_yellow(0.98f, 0.98f, 0.82f);
+constexpr Point3 dark_khaki(0.74f, 0.69f, 0.42f);
+constexpr Point3 pale_goldenrod(0.93f, 0.93f, 0.67f);
+constexpr Point3 rosy_brown(0.75f, 0.61f, 0.61f);
+constexpr Point3 sandy_brown(0.96f, 0.64f, 0.37f);
+constexpr Point3 wheat(0.96f, 0.92f, 0.75f);
+constexpr Point3 burly_wood(0.87f, 0.72f, 0.53f);
+constexpr Point3 beige(0.96f, 0.96f, 0.91f);
+constexpr Point3 antique_white(0.98f, 0.92f, 0.90f);
+constexpr Point3 light_salmon(1.0f, 0.63f, 0.48f);
+constexpr Point3 dark_salmon(0.91f, 0.60f, 0.48f);
+constexpr Point3 medium_purple(0.57f, 0.44f, 0.86f);
+constexpr Point3 blue_violet(0.54f, 0.13f, 0.89f);
+constexpr Point3 dark_orchid(0.60f, 0.20f, 0.80f);
+constexpr Point3 medium_orchid(0.73f, 0.33f, 0.83f);
+constexpr Point3 rebecca_purple(0.40f, 0.20f, 0.60f);
+constexpr Point3 dark_slate_blue(0.28f, 0.16f, 0.55f);
+constexpr Point3 steel_blue(0.27f, 0.51f, 0.71f);
+constexpr Point3 royal_blue(0.25f, 0.41f, 0.88f);
+constexpr Point3 dodger_blue(0.12f, 0.44f, 1.0f);
+constexpr Point3 deep_sky_blue(0.0f, 0.75f, 1.0f);
+constexpr Point3 sky_blue(0.53f, 0.81f, 0.92f);
+constexpr Point3 light_sky_blue(0.53f, 0.80f, 0.98f);
+constexpr Point3 slate_blue(0.41f, 0.35f, 0.80f);
+constexpr Point3 medium_slate_blue(0.48f, 0.41f, 0.75f);
+constexpr Point3 light_steel_blue(0.69f, 0.77f, 0.85f);
+constexpr Point3 light_blue(0.68f, 0.85f, 0.90f);
+constexpr Point3 powder_blue(0.69f, 0.88f, 0.90f);
+constexpr Point3 cadet_blue(0.37f, 0.62f, 0.62f);
+constexpr Point3 medium_turquoise(0.28f, 0.82f, 0.80f);
+constexpr Point3 turquoise(0.25f, 0.71f, 0.82f);
+constexpr Point3 light_sea_green(0.20f, 0.74f, 0.66f);
+constexpr Point3 medium_aquamarine(0.40f, 0.80f, 0.67f);
+constexpr Point3 aquamarine(0.50f, 1.0f, 0.83f);
+constexpr Point3 dark_cyan(0.0f, 0.54f, 0.54f);
+constexpr Point3 dark_turquoise(0.0f, 0.81f, 0.82f);
+constexpr Point3 light_cyan(0.88f, 1.0f, 1.0f);
+constexpr Point3 medium_spring_green(0.0f, 0.98f, 0.60f);
+constexpr Point3 spring_green(0.0f, 1.0f, 0.50f);
+constexpr Point3 mint_cream(0.96f, 1.0f, 0.98f);
+constexpr Point3 honeydew(0.94f, 1.0f, 0.94f);
+constexpr Point3 alice_blue(0.94f, 0.97f, 1.0f);
+constexpr Point3 azure(0.94f, 1.0f, 1.0f);
+constexpr Point3 ivory(1.0f, 1.0f, 0.94f);
+constexpr Point3 linen(0.98f, 0.94f, 0.90f);
+constexpr Point3 misty_rose(1.0f, 0.89f, 0.88f);
+constexpr Point3 old_lace(0.99f, 0.96f, 0.90f);
+constexpr Point3 papaya_whip(1.0f, 0.93f, 0.83f);
+constexpr Point3 seashell(1.0f, 0.96f, 0.93f);
+constexpr Point3 snow(1.0f, 0.98f, 0.98f);
+constexpr Point3 light_goldenrod(0.93f, 0.87f, 0.51f);
+constexpr Point3 indigo(0.29f, 0.0f, 0.51f);
+constexpr Point3 dim_gray(0.41f, 0.41f, 0.41f);
+constexpr Point3 light_grey(0.83f, 0.83f, 0.83f);
+
+} // namespace alzartak::Color

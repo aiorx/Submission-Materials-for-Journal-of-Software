@@ -1,0 +1,756 @@
+#!/usr/bin/env node
+
+// Assisted using common GitHub development utilities
+// Unified build system for PrismWeave project
+// Handles building browser extension, bookmarklet, web deployment, and other components
+
+const fs = require('fs');
+const path = require('path');
+const { execSync, spawn } = require('child_process');
+
+class PrismWeaveBuildSystem {
+  constructor() {
+    this.projectRoot = __dirname;
+    this.isProduction = process.env.NODE_ENV === 'production';
+    this.components = {
+      'browser-extension': {
+        path: 'browser-extension',
+        buildScript: 'scripts/build-simple.js',
+        distPath: 'dist/browser-extension',
+      },
+      'bookmarklet': {
+        path: 'browser-extension',
+        buildScript: 'scripts/build-bookmarklet.js',
+        distPath: 'dist/bookmarklet',
+      },
+      'cli': {
+        path: 'cli',
+        buildScript: 'npm run build',
+        distPath: 'cli/dist',
+      },
+      'ai-processing': {
+        path: 'ai-processing',
+        buildScript: 'python -m pytest tests/ -v',
+        distPath: 'dist/ai-processing',
+      }
+    };
+  }
+
+  async build(target = 'all') {
+    console.log(`🔨 Building PrismWeave - Target: ${target}`);
+    console.log(`📦 Environment: ${this.isProduction ? 'Production' : 'Development'}`);
+
+    try {
+      // Support optional flags after target (e.g. web --fast)
+      const extraArgs = process.argv.slice(3);
+      const fastMode = extraArgs.includes('--fast');
+      switch (target) {
+        case 'all':
+        case 'build':
+          await this.buildAll();
+          break;
+        case 'browser-extension':
+          await this.buildBrowserExtension();
+          break;
+        case 'bookmarklet':
+          await this.buildBookmarklet();
+          break;
+        case 'cli':
+          await this.buildCLI();
+          break;
+        case 'ai-processing':
+          await this.buildAIProcessing();
+          break;
+        case 'web':
+          await this.buildWebOnly({ fast: fastMode });
+          break;
+        case 'clean':
+          await this.clean();
+          break;
+        default:
+          throw new Error(`Unknown build target: ${target}`);
+      }
+
+      console.log('✅ Build completed successfully!');
+    } catch (error) {
+      console.error('❌ Build failed:', error.message);
+      process.exit(1);
+    }
+  }
+
+  async buildAll() {
+    console.log('🏗️ Building all components...');
+    
+    // Build in order of dependencies
+    await this.buildAIProcessing();
+    await this.buildCLI();
+    await this.buildBrowserExtension();
+    await this.buildBookmarklet();
+    await this.buildWebDeployment();
+  }
+
+  async buildBrowserExtension() {
+    console.log('📦 Building browser extension...');
+    const componentPath = path.join(this.projectRoot, 'browser-extension');
+    
+    // Install dependencies if needed
+    if (!fs.existsSync(path.join(componentPath, 'node_modules'))) {
+      console.log('📥 Installing browser extension dependencies...');
+      execSync('npm install', { cwd: componentPath, stdio: 'inherit' });
+    }
+
+    // Run the build script
+    execSync('node scripts/build-simple.js', { 
+      cwd: componentPath, 
+      stdio: 'inherit',
+      env: { ...process.env, NODE_ENV: this.isProduction ? 'production' : 'development' }
+    });
+    
+    console.log('✅ Browser extension built');
+  }
+
+  async buildBookmarklet() {
+    console.log('🔗 Building bookmarklet...');
+    const componentPath = path.join(this.projectRoot, 'website');
+    
+    execSync('node scripts/build-bookmarklet.js', { 
+      cwd: componentPath, 
+      stdio: 'inherit',
+      env: { ...process.env, NODE_ENV: this.isProduction ? 'production' : 'development' }
+    });
+    
+    console.log('✅ Bookmarklet built');
+  }
+
+  async buildCLI() {
+    console.log('🖥️ Building CLI tool...');
+    const componentPath = path.join(this.projectRoot, 'cli');
+    
+    // Check if CLI directory exists
+    if (!fs.existsSync(componentPath)) {
+      console.log('⏭️ CLI not found, skipping...');
+      return;
+    }
+
+    // Install dependencies if needed
+    if (!fs.existsSync(path.join(componentPath, 'node_modules'))) {
+      console.log('📥 Installing CLI dependencies...');
+      execSync('npm install', { cwd: componentPath, stdio: 'inherit' });
+    }
+
+    // Build using TypeScript compiler
+    execSync('npm run build', { 
+      cwd: componentPath, 
+      stdio: 'inherit',
+      env: { ...process.env, NODE_ENV: this.isProduction ? 'production' : 'development' }
+    });
+    
+    console.log('✅ CLI tool built');
+  }
+
+  async buildAIProcessing() {
+    console.log('🤖 Building AI processing...');
+    const componentPath = path.join(this.projectRoot, 'ai-processing');
+    
+    // Check if AI processing directory exists
+    if (!fs.existsSync(componentPath)) {
+      console.log('⏭️ AI processing not found, skipping...');
+      return;
+    }
+
+    // Run tests to validate the AI processing setup
+    try {
+      execSync('python -m pytest tests/ -v --tb=short', { 
+        cwd: componentPath, 
+        stdio: 'inherit',
+        timeout: 30000 // 30 second timeout
+      });
+      console.log('✅ AI processing validated');
+    } catch (error) {
+      console.log('⚠️ AI processing tests failed, but continuing build...');
+    }
+  }
+
+  async buildWebOnly(options = {}) {
+    const fast = options.fast;
+    console.log(`🌐 Building web deployment only${fast ? ' (fast mode)' : ''}...`);
+
+    if (!fast) {
+      // Full rebuild path: rebuild upstream artifacts first
+      await this.buildBrowserExtension();
+      await this.buildBookmarklet();
+    } else {
+      // Fast path: verify extension/bookmarklet dists exist; warn if missing
+      const extDist = path.join(this.projectRoot, 'dist', 'browser-extension');
+      const bmDist = path.join(this.projectRoot, 'dist', 'bookmarklet');
+      if (!fs.existsSync(extDist) || !fs.existsSync(bmDist)) {
+        console.log('⚠️  Fast mode requested but required dist outputs missing; performing full build');
+        await this.buildBrowserExtension();
+        await this.buildBookmarklet();
+      }
+    }
+
+    await this.buildWebDeployment({ fast });
+  }
+
+  async buildWebDeployment(options = {}) {
+    const fast = options.fast;
+    console.log(`🌐 Building web deployment${fast ? ' (fast mode: incremental copy)' : ''}...`);
+    const buildStart = Date.now();
+    
+    // Create web distribution directory
+    const webDistPath = path.join(this.projectRoot, 'dist', 'web');
+    this.ensureDirectory(webDistPath);
+
+    // Initialize incremental copy cache
+    const cacheDir = path.join(this.projectRoot, '.build-cache');
+    this.ensureDirectory(cacheDir);
+    const manifestPath = path.join(cacheDir, 'web-copy-manifest.json');
+    let manifest = { files: {}, destToSrc: {} };
+    try {
+      if (fs.existsSync(manifestPath)) {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      }
+    } catch (e) {
+      console.warn('⚠️  Failed to read web copy manifest, starting fresh:', e.message);
+    }
+
+    const copyStats = { copied: 0, skipped: 0, removed: 0, bytesCopied: 0 };
+
+    const incrementalCopy = (src, destRoot, filterFn) => {
+      if (!fs.existsSync(src)) return;
+      const traverse = (currentSrc, relative = '') => {
+        const entries = fs.readdirSync(currentSrc, { withFileTypes: true });
+        for (const entry of entries) {
+          const relPath = path.join(relative, entry.name);
+          const absPath = path.join(currentSrc, entry.name);
+            if (filterFn && !filterFn(absPath, relPath, entry)) continue;
+          const destPath = path.join(destRoot, relPath);
+          const key = absPath; // source path key
+          if (entry.isDirectory()) {
+            traverse(absPath, relPath);
+          } else if (entry.isFile()) {
+            try {
+              const stats = fs.statSync(absPath);
+              const prev = manifest.files[key];
+              const sig = `${stats.mtimeMs}:${stats.size}`;
+              const needsCopy = !fast || !prev || prev.sig !== sig || !fs.existsSync(destPath);
+              if (needsCopy) {
+                this.ensureDirectory(path.dirname(destPath));
+                fs.copyFileSync(absPath, destPath);
+                manifest.files[key] = { sig, dest: destPath };
+                manifest.destToSrc[destPath] = key;
+                copyStats.copied++; copyStats.bytesCopied += stats.size;
+              } else {
+                copyStats.skipped++;
+              }
+            } catch (e) {
+              console.warn('Copy failed for', absPath, e.message);
+            }
+          }
+        }
+      };
+      traverse(src, '');
+    };
+
+    // Copy shared design tokens used across builds so CSS imports resolve
+    const sharedStylesPath = path.join(this.projectRoot, 'shared-styles');
+    if (fs.existsSync(sharedStylesPath)) {
+      incrementalCopy(sharedStylesPath, path.join(webDistPath, 'shared-styles'));
+    }
+
+    // Copy static website assets first (so later copies can reference them)
+    const websiteSrcPath = path.join(this.projectRoot, 'website');
+    if (fs.existsSync(websiteSrcPath)) {
+      // Copy everything under website/assets to dist/web/assets
+      const websiteAssets = path.join(websiteSrcPath, 'assets');
+      if (fs.existsSync(websiteAssets)) {
+        incrementalCopy(websiteAssets, path.join(webDistPath, 'assets'));
+      }
+
+      // Copy any additional website files/folders (excluding index.html which is templated)
+      const entries = fs.readdirSync(websiteSrcPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name === 'assets' || entry.name === 'index.html') continue;
+        const src = path.join(websiteSrcPath, entry.name);
+        const dest = path.join(webDistPath, entry.name);
+        if (entry.isDirectory()) {
+          incrementalCopy(src, dest);
+        } else if (entry.isFile()) {
+          const stats = fs.statSync(src);
+          const prev = manifest.files[src];
+          const sig = `${stats.mtimeMs}:${stats.size}`;
+          if (!fast || !prev || prev.sig !== sig || !fs.existsSync(dest)) {
+            this.ensureDirectory(path.dirname(dest));
+            fs.copyFileSync(src, dest);
+            manifest.files[src] = { sig, dest };
+            manifest.destToSrc[dest] = src;
+            copyStats.copied++; copyStats.bytesCopied += stats.size;
+          } else {
+            copyStats.skipped++;
+          }
+        }
+      }
+    }
+
+    // Copy browser extension files for web deployment
+    const browserExtensionDist = path.join(this.projectRoot, 'dist', 'browser-extension');
+    if (fs.existsSync(browserExtensionDist)) {
+      incrementalCopy(browserExtensionDist, path.join(webDistPath, 'extension'));
+    }
+
+    // Copy injectable files to web deployment
+    const injectableDist = path.join(this.projectRoot, 'dist', 'browser-extension', 'injectable');
+    if (fs.existsSync(injectableDist)) {
+      incrementalCopy(injectableDist, path.join(webDistPath, 'injectable'));
+    }
+
+    // Copy bookmarklet files and ensure CSS is accessible for web deployment
+    const bookmarkletDist = path.join(this.projectRoot, 'website', 'dist');
+    if (fs.existsSync(bookmarkletDist)) {
+      // Copy bookmarklet directory
+      const bookmarkletSrc = path.join(bookmarkletDist, 'bookmarklet');
+      if (fs.existsSync(bookmarkletSrc)) {
+        incrementalCopy(bookmarkletSrc, path.join(webDistPath, 'bookmarklet'));
+        
+        // Remove export statements from generator.js for browser compatibility
+        const webGeneratorJs = path.join(webDistPath, 'bookmarklet', 'generator.js');
+        if (fs.existsSync(webGeneratorJs)) {
+          let content = fs.readFileSync(webGeneratorJs, 'utf8');
+          content = content.replace(/export\s*\{[^}]+\}\s*;?\s*$/gm, '');
+          fs.writeFileSync(webGeneratorJs, content);
+        }
+      }
+      
+      // Copy assets directory
+      const assetsSrc = path.join(bookmarkletDist, 'assets');
+      if (fs.existsSync(assetsSrc)) {
+        incrementalCopy(assetsSrc, path.join(webDistPath, 'assets'));
+      }
+      
+      console.log('   ✅ Bookmarklet files copied with correct CSS paths');
+    }
+
+  // Create web index page from template if available
+  await this.createWebIndexPage(webDistPath);
+
+  // Generate favicon.ico into web dist (from logo.png or logo.svg)
+  await this.createFavicon(webDistPath);
+
+    // Create deployment manifest
+    await this.createDeploymentManifest(webDistPath);
+
+    // Remove orphaned dest files (only in fast mode to save time on full builds)
+    if (fast) {
+      const allDestFiles = this.getDirectoryListing(webDistPath).map(f => path.join(webDistPath, f.path));
+      for (const destFile of allDestFiles) {
+        const srcRef = manifest.destToSrc[destFile];
+        if (srcRef && !fs.existsSync(srcRef)) {
+          try {
+            fs.rmSync(destFile);
+            delete manifest.destToSrc[destFile];
+            // Find and remove manifest entry pointing to this dest
+            for (const [k, v] of Object.entries(manifest.files)) {
+              if (v.dest === destFile) delete manifest.files[k];
+            }
+            copyStats.removed++;
+          } catch (e) {
+            // Non-fatal
+          }
+        }
+      }
+    }
+
+    // Persist manifest
+    try {
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    } catch (e) {
+      console.warn('⚠️  Unable to persist web copy manifest:', e.message);
+    }
+
+    const duration = Date.now() - buildStart;
+    console.log('✅ Web deployment built');
+    console.log(`📁 Web files available at: ${webDistPath}`);
+    console.log(`📊 Web Build Summary: copied=${copyStats.copied} skipped=${copyStats.skipped} removed=${copyStats.removed} bytes=${copyStats.bytesCopied} duration=${duration}ms${fast ? ' (fast)' : ''}`);
+  }
+
+  async createWebIndexPage(webDistPath) {
+    // Prefer website/index.html template when present; fall back to built-in template
+    const websiteIndexTemplate = path.join(this.projectRoot, 'website', 'index.html');
+    if (fs.existsSync(websiteIndexTemplate)) {
+      let raw = fs.readFileSync(websiteIndexTemplate, 'utf8');
+      // Ensure favicon links exist; inject any missing before </head>
+      const ensureFavicons = (html) => {
+        const needsIco = !/href=["']\.\/?favicon\.ico["']/i.test(html);
+        const needsPng = !/href=["']\.\/?favicon\.png["']/i.test(html);
+        const needsSvg = !/type=["']image\/svg\+xml["'][^>]*href=["']\.\/?logo\.svg["']|href=["']\.\/?logo\.svg["'][^>]*type=["']image\/svg\+xml["']/i.test(html);
+
+        if (!needsIco && !needsPng && !needsSvg) return html;
+
+        const links = [];
+        if (needsIco) links.push('    <link rel="icon" href="./favicon.ico" type="image/x-icon" />');
+        if (needsPng) links.push('    <link rel="icon" href="./favicon.png" type="image/png" />');
+        if (needsSvg) links.push('    <link rel="icon" href="./logo.svg" type="image/svg+xml" />');
+
+        // Insert before closing head tag
+        return html.replace(/<\/head>/i, `${links.join('\n')}\n</head>`);
+      };
+
+      const withFavicons = ensureFavicons(raw);
+      const rendered = withFavicons
+        .replace(/\{\{VERSION\}\}/g, require('./package.json').version)
+        .replace(/\{\{BUILD_DATE\}\}/g, new Date().toISOString())
+        .replace(/\{\{ENVIRONMENT\}\}/g, this.isProduction ? 'Production' : 'Development');
+      fs.writeFileSync(path.join(webDistPath, 'index.html'), rendered);
+      return;
+    }
+
+  const indexHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PrismWeave - Web Deployment</title>
+  <link rel=\"icon\" href=\"./favicon.ico\" type=\"image/x-icon\" />
+  <link rel=\"icon\" href=\"./favicon.png\" type=\"image/png\" />
+  <link rel=\"icon\" href=\"./logo.svg\" type=\"image/svg+xml\" />
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+            color: white;
+            padding: 40px 30px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+        .content {
+            padding: 40px 30px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin: 30px 0;
+        }
+        .card {
+            background: #f8fafc;
+            padding: 30px;
+            border-radius: 12px;
+            border-left: 4px solid #2563eb;
+            text-align: center;
+        }
+        .card h3 {
+            color: #2563eb;
+            margin-bottom: 15px;
+        }
+        .btn {
+            display: inline-block;
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: white;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            margin: 10px 5px;
+            transition: transform 0.2s ease;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        .status {
+            background: #ecfdf5;
+            border: 1px solid #10b981;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .footer {
+            background: #f8fafc;
+            padding: 20px;
+            text-align: center;
+            color: #6b7280;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🌟 PrismWeave Web Deployment</h1>
+            <p>Unified document management and content creation system</p>
+        </div>
+        
+        <div class="content">
+            <div class="status">
+                <h3>✅ Deployment Status</h3>
+                <p><strong>Build Date:</strong> ${new Date().toISOString()}</p>
+                <p><strong>Version:</strong> ${require('./package.json').version}</p>
+                <p><strong>Environment:</strong> ${this.isProduction ? 'Production' : 'Development'}</p>
+            </div>
+
+            <div class="grid">
+                <div class="card">
+                    <h3>🔗 Bookmarklet</h3>
+                    <p>Ultra-lightweight content capture tool that works in any browser.</p>
+                    <a href="./bookmarklet/generator.html" class="btn">Generate Bookmarklet</a>
+                </div>
+                
+                <div class="card">
+                    <h3>🧩 Browser Extension</h3>
+                    <p>Full-featured browser extension for Chrome and Edge.</p>
+                    <a href="./extension/popup/popup.html" class="btn">View Extension Files</a>
+                </div>
+                
+                <div class="card">
+                    <h3>📖 Documentation</h3>
+                    <p>Learn how to use PrismWeave effectively.</p>
+                    <a href="../README.md" class="btn">Read Docs</a>
+                </div>
+                
+                <div class="card">
+                    <h3>🔧 Development</h3>
+                    <p>Source code and development resources.</p>
+                    <a href="https://github.com/davidhayesbc/PrismWeave" class="btn">GitHub Repository</a>
+                </div>
+            </div>
+
+            <div style="background: #fffbeb; border: 1px solid #f59e0b; border-radius: 12px; padding: 20px; margin: 30px 0;">
+                <h3 style="color: #92400e;">🚀 Quick Start</h3>
+                <ol style="color: #92400e;">
+                    <li><strong>Try the Bookmarklet:</strong> Click "Install Bookmarklet" above</li>
+                    <li><strong>Configure GitHub:</strong> Add your repository settings</li>
+                    <li><strong>Capture Content:</strong> Use on any webpage to save content</li>
+                    <li><strong>Manage Documents:</strong> View captured content in your repository</li>
+                </ol>
+            </div>
+        </div>
+        
+        <div class="footer">
+      <p>PrismWeave v${require('./package.json').version} - Built with ❤️ by the PrismWeave Team</p>
+        </div>
+    </div>
+</body>
+</html>`;
+
+    fs.writeFileSync(path.join(webDistPath, 'index.html'), indexHtml);
+  }
+
+  async createFavicon(webDistPath) {
+    try {
+      // Always copy SVG logo to dist if present (used as optional SVG favicon)
+      const logoSvg = path.join(this.projectRoot, 'logo.svg');
+      if (fs.existsSync(logoSvg)) {
+        const svgOutPath = path.join(webDistPath, 'logo.svg');
+        try {
+          fs.copyFileSync(logoSvg, svgOutPath);
+        } catch (_) {
+          // Non-fatal
+        }
+      }
+
+      const icoPath = path.join(webDistPath, 'favicon.ico');
+      const pngOutPath = path.join(webDistPath, 'favicon.png');
+      // If already exists, keep it
+      if (fs.existsSync(icoPath)) return;
+
+      const logoPng = path.join(this.projectRoot, 'logo.png');
+      const hasPng = fs.existsSync(logoPng);
+      const hasSvg = fs.existsSync(logoSvg);
+
+      if (!hasPng && !hasSvg) {
+        console.warn('⚠️  No logo.png or logo.svg found; skipping favicon generation');
+        return;
+      }
+
+      // Prefer PNG->ICO conversion; also output a PNG as fallback
+      if (hasPng) {
+        try {
+          const { default: pngToIco } = await import('png-to-ico');
+          const icoBuffer = await pngToIco([logoPng]);
+          fs.writeFileSync(icoPath, icoBuffer);
+          // Copy png fallback
+          fs.copyFileSync(logoPng, pngOutPath);
+          console.log('✅ Favicon generated from logo.png');
+          return;
+        } catch (e) {
+          console.warn('⚠️  png-to-ico conversion failed, copying PNG fallback:', e.message);
+          fs.copyFileSync(logoPng, pngOutPath);
+          return;
+        }
+      }
+
+      // If only SVG exists, try a minimal conversion by embedding a simple favicon placeholder (without extra deps)
+      // For best quality, provide logo.png; otherwise we ship a tiny generic fallback.
+      const fallbackIco = Buffer.from(
+        '00000100010010100000010020006804000016000000280000001000000020000000010020000000000040040000000000000000000000000000000000000000',
+        'hex'
+      );
+      fs.writeFileSync(icoPath, fallbackIco);
+      console.log('⚠️  Generated a minimal placeholder favicon (provide logo.png for better quality)');
+    } catch (e) {
+      console.warn('⚠️  Favicon generation failed:', e.message);
+    }
+  }
+
+  async createDeploymentManifest(webDistPath) {
+    const manifest = {
+      name: 'PrismWeave Web Deployment',
+      version: require('./package.json').version,
+      buildDate: new Date().toISOString(),
+      environment: this.isProduction ? 'production' : 'development',
+      components: {
+        bookmarklet: fs.existsSync(path.join(webDistPath, 'bookmarklet')),
+        browserExtension: fs.existsSync(path.join(webDistPath, 'extension')),
+      },
+      files: this.getDirectoryListing(webDistPath),
+    };
+
+    fs.writeFileSync(
+      path.join(webDistPath, 'deployment-manifest.json'),
+      JSON.stringify(manifest, null, 2)
+    );
+  }
+
+  getDirectoryListing(dirPath) {
+    const files = [];
+    
+    function traverse(currentPath, relativePath = '') {
+      const items = fs.readdirSync(currentPath);
+      
+      for (const item of items) {
+        const fullPath = path.join(currentPath, item);
+        const relativeFilePath = path.join(relativePath, item);
+        const stats = fs.statSync(fullPath);
+        
+        if (stats.isDirectory()) {
+          traverse(fullPath, relativeFilePath);
+        } else {
+          files.push({
+            path: relativeFilePath.replace(/\\/g, '/'), // Normalize for web
+            size: stats.size,
+            modified: stats.mtime.toISOString(),
+          });
+        }
+      }
+    }
+    
+    if (fs.existsSync(dirPath)) {
+      traverse(dirPath);
+    }
+    
+    return files;
+  }
+
+  async clean() {
+    console.log('🧹 Cleaning build artifacts...');
+    
+    const cleanPaths = [
+      'dist',
+      'cli/dist',
+      'ai-processing/__pycache__',
+      'ai-processing/.pytest_cache',
+    ];
+
+    for (const cleanPath of cleanPaths) {
+      const fullPath = path.join(this.projectRoot, cleanPath);
+      if (fs.existsSync(fullPath)) {
+        fs.rmSync(fullPath, { recursive: true, force: true });
+        console.log(`🗑️ Removed: ${cleanPath}`);
+      }
+    }
+
+    console.log('✅ Clean completed');
+  }
+
+  ensureDirectory(dirPath) {
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true });
+    }
+  }
+
+  copyDirectory(src, dest) {
+    this.ensureDirectory(dest);
+    
+    const items = fs.readdirSync(src);
+    for (const item of items) {
+      const srcPath = path.join(src, item);
+      const destPath = path.join(dest, item);
+      const stats = fs.statSync(srcPath);
+      
+      if (stats.isDirectory()) {
+        this.copyDirectory(srcPath, destPath);
+      } else {
+        fs.copyFileSync(srcPath, destPath);
+      }
+    }
+  }
+}
+
+// Main execution
+async function main() {
+  const args = process.argv.slice(2);
+  
+  // Handle different call patterns:
+  // node build.js -> build all
+  // node build.js web -> build web
+  // node build.js clean -> clean
+  // node build.js build all -> build all
+  // node build.js build browser-extension -> build browser-extension
+  
+  let command, target;
+  
+  if (args.length === 0) {
+    command = 'build';
+    target = 'all';
+  } else if (args.length === 1) {
+    if (args[0] === 'clean') {
+      command = 'clean';
+      target = null;
+    } else {
+      command = 'build';
+      target = args[0];
+    }
+  } else {
+    command = args[0];
+    target = args[1];
+  }
+
+  const buildSystem = new PrismWeaveBuildSystem();
+
+  try {
+    if (command === 'clean') {
+      await buildSystem.clean();
+    } else {
+      await buildSystem.build(target);
+    }
+  } catch (error) {
+    console.error('❌ Build system error:', error);
+    process.exit(1);
+  }
+}
+
+// Execute if called directly
+if (require.main === module) {
+  main();
+}
+
+module.exports = { PrismWeaveBuildSystem };

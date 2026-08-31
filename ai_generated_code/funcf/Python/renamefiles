@@ -1,0 +1,7 @@
+```python
+# Supported via standard programming aids 3.5, modified by Hans Deragon, 2023-09-03 16:31:32 EDT
+# Define a regular expression pattern to match repeated file extensions
+re_remove_duplicate_extensions = re.compile(r'(\.[^.]+)\1+')
+def remove_duplicate_extensions(filename):
+    return re_remove_duplicate_extensions.sub(r'\1', filename)
+```

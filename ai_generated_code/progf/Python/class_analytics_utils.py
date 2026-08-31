@@ -1,0 +1,2078 @@
+# Supported via standard GitHub programming aids
+from importlib import reload
+
+import csv
+import json
+import regex
+from io import StringIO
+
+
+import numpy as np
+import pandas as pd
+
+
+from qualtrics_keys import *
+import qualtrics_api as qapi
+import nlp_summary
+
+import get_class_from_db as db
+from scipy.stats import binomtest
+
+reload(db)
+reload(qapi)
+reload(nlp_summary)
+
+pd.set_option("display.max_colwidth", None)
+
+
+def clean_up_description(description: str):
+    """
+    Cleans up survey question descriptions by removing newlines, non-ascii characters, and extra spaces.
+    """
+    # remove new line characters
+    description = description.replace("\n", "")
+    # remove non-ascii characters
+    description = description.encode("ascii", "ignore").decode("ascii")
+    # remove runs of spaces
+    description = regex.sub(r"\s+", " ", description)
+    # remove leading and trailing whitespace
+    description = description.strip()
+    return description
+
+
+def read_in_qualtrics(f: StringIO):
+    """
+    Reads a Qualtrics CSV file and returns header, description, formatspec, and data as numpy array.
+    """
+    reader = csv.reader(f, delimiter=",", quotechar='"')
+    header = next(reader)
+    description = next(reader)
+    description = [clean_up_description(d) for d in description]
+    formatspec = next(reader)
+    data = [row for row in reader]
+    return header, description, formatspec, np.asarray(data)
+
+
+columns_to_drop = [
+    "Status",
+    "StartDate",
+    "EndDate",
+    "Finished",
+    "IPAddress",
+    "Progress",
+    "RecordedDate",
+    "ResponseId",
+    "RecipientLastName",
+    "RecipientFirstName",
+    "RecipientEmail",
+    "ExternalReference",
+    "LocationLatitude",
+    "LocationLongitude",
+    "DistributionChannel",
+    "UserLanguage",
+    "Intro information_2",
+    "Intro information_3",
+]
+
+
+def load_data(from_api=True, survey_id="", filename=None):
+    """
+    Loads survey data from API or local CSV file. Writes API data to file if fetched.
+    """
+    if filename is None:
+        filename = survey_id + "_response.csv"
+
+    if from_api:
+        pre_response = qapi.get_survey(
+            token, data_center, survey_id, format="csv", numeric=False
+        )
+        if pre_response is not None:
+            with open(filename, "w") as f:
+                f.write(pre_response)
+        return pre_response
+
+    if not from_api:
+        with open(filename, "r") as f:
+            return f.read()
+
+
+def load_pre_data(from_api=True, filename="2025_pre_response.csv"):
+    """
+    Loads pre-survey data using load_data().
+    """
+    return load_data(from_api, survey_id_2025_pre, filename)
+
+
+def load_post_data(from_api=True, filename="2025_post_response.csv"):
+    """
+    Loads post-survey data using load_data().
+    """
+    return load_data(from_api, survey_id_2025_post, filename)
+
+
+def parse_response(response):
+    """
+    Parses a Qualtrics CSV response string into header, description, and data.
+    """
+    with StringIO(response) as f:
+        tuple = read_in_qualtrics(f)
+        header, description, _, data = tuple
+
+    assert len(header) == len(
+        description
+    ), f"Header and description lengths do not match: {len(header)} != {len(description)}"
+    assert len(header) == len(
+        data[0]
+    ), f"Header and data lengths do not match: {len(header)} != {len(data[0])}"
+
+    return header, description, data
+
+
+def column_cleanup(
+    header_pre,
+    description_pre,
+    data_pre,
+    header_post,
+    description_post,
+    data_post,
+    drop_columns=[],
+):
+    """
+    Drops specified columns from pre and post survey data and aligns question descriptions.
+    """
+    for i in range(len(description_post)):
+        if "Post-Survey" in description_post[i]:
+            description_post[i] = description_post[i].replace(
+                "Post-Survey", "Pre-Survey"
+            )
+
+    for col in drop_columns:
+        if col in description_post:
+            post_idx = description_post.index(col)
+            print(f"Dropping column {col} from post survey")
+            header_post.pop(post_idx)
+            description_post.pop(post_idx)
+            data_post = np.delete(data_post, post_idx, axis=1)
+        if col in description_pre:
+            pre_idx = description_pre.index(col)
+            print(f"Dropping column {col} from pre survey")
+            header_pre.pop(pre_idx)
+            description_pre.pop(pre_idx)
+            data_pre = np.delete(data_pre, pre_idx, axis=1)
+
+
+def get_pre_header_for_post_question(
+    question, header_pre, description_pre, header_post, description_post, verbose=False
+):
+    """
+    Ensures that matching questions in pre and post have the same header tag.
+    """
+    post_idx = description_post.index(question)
+    post_header = header_post[post_idx]
+
+    try:
+        pre_idx = description_pre.index(question)
+    except ValueError:
+        if not verbose:
+            return
+        print(f"Question {question} not found in pre survey")
+        return
+
+    pre_header = header_pre[pre_idx]
+    if (description_post[post_idx] == description_pre[pre_idx]) and (
+        header_post[post_idx] == header_pre[pre_idx]
+    ):
+        if not verbose:
+            return
+        print(f"No need to change header {post_header} for question")
+        return
+
+    if pre_header not in header_post:
+        # print(f"Changing header {post_header} to {pre_header}")
+        header_post[post_idx] = pre_header
+    else:
+        print(f"Header {pre_header} already in post survey")
+        pre_idx = header_post.index(pre_header)
+        post_idx = header_post.index(pre_header)
+        pre_q = description_pre[pre_idx]
+        post_q = description_post[post_idx]
+        print(f"Pre: {pre_header} Question: {pre_q}")
+        print(f"Post: {pre_header} Question: {post_q}")
+
+
+def create_initial_dataframes(
+    header_pre,
+    description_pre,
+    data_pre,
+    header_post,
+    description_post,
+    data_post,
+    id_column,
+    fix_duplicates=True,
+):
+    """
+    Creates pandas DataFrames for pre and post survey data, indexed by id_column. Drops duplicate IDs in pre.
+    """
+    df_pre = pd.DataFrame(data_pre, columns=description_pre)
+    df_post = pd.DataFrame(data_post, columns=description_post)
+    
+    df_pre['Finished'] = df_pre['Finished'] == "True"
+    df_post['Finished'] = df_post['Finished'] == "True"
+    df_pre = df_pre.loc[df_pre['Finished'] == True]
+    df_post = df_post.loc[df_post['Finished'] == True]
+    
+    if fix_duplicates:
+        if not df_pre[id_column].is_unique:
+            duplicates = df_pre[df_pre.duplicated(subset=[id_column], keep=False)][
+                id_column
+            ].unique()
+            print("Renaming duplicate ids in pre:")
+            for dup in duplicates:
+                dup_indices = df_pre[df_pre[id_column] == dup].index
+                for i, idx in enumerate(dup_indices):
+                    suffix = f"_pre_{hex(i)[2:].zfill(2)}"
+                    new_id = f"{dup}{suffix}"
+                    print(f"\t{dup} -> {new_id}")
+                    df_pre.at[idx, id_column] = new_id
+
+        if not df_post[id_column].is_unique:
+            duplicates = df_post[df_post.duplicated(subset=[id_column], keep=False)][
+                id_column
+            ].unique()
+            print("Renaming duplicate ids in post:")
+            for dup in duplicates:
+                dup_indices = df_post[df_post[id_column] == dup].index
+                for i, idx in enumerate(dup_indices):
+                    suffix = f"_post_{hex(i)[2:].zfill(2)}"
+                    new_id = f"{dup}{suffix}"
+                    print(f"\t{dup} -> {new_id}")
+                    df_post.at[idx, id_column] = new_id
+    
+    df_pre[id_column] = df_pre[id_column].astype(str).str.strip()
+    df_post[id_column] = df_post[id_column].astype(str).str.strip()
+    return df_pre, df_post
+
+
+def create_question_dataframe(
+    df_pre, df_post, header_pre, description_pre, header_post, description_post
+):
+    """
+    Builds a DataFrame listing all questions, their presence in pre/post, and their tags.
+    """
+    q = [c for c in df_pre.columns]
+    _questions = q + [c for c in df_post.columns if c not in q]
+
+    questions_in_common = [
+        c in df_post.columns and c in df_pre.columns for c in _questions
+    ]
+    questions_in_pre = [c in df_pre.columns for c in _questions]
+    questions_in_post = [c in df_post.columns for c in _questions]
+    tag_pre = [
+        header_pre[description_pre.index(q)] if q in description_pre else None
+        for q in _questions
+    ]
+    tag_post = [
+        header_post[description_post.index(q)] if q in description_post else None
+        for q in _questions
+    ]
+    print(f"Questions in common: {sum(questions_in_common)}")
+    print(f"Questions in pre: {sum(questions_in_pre)}")
+    print(f"Questions in post: {sum(questions_in_post)}")
+
+    return pd.DataFrame(
+        {
+            "question": _questions,
+            "both": questions_in_common,
+            "in_pre": questions_in_pre,
+            "in_post": questions_in_post,
+            "tag_pre": tag_pre,
+            "tag_post": tag_post,
+            "question_category": [None] * len(_questions),
+        },
+    )
+
+
+def is_likert_answer(x):
+    """
+    Returns True if the answer string is a Likert scale response.
+    """
+    if isinstance(x, str):
+        return any(
+            [
+                "strongly disagree" in x.lower(),
+                "strongly agree" in x.lower(),
+            ]
+        )
+    return False
+
+
+def is_likert_column(x: pd.Series):
+    """
+    Returns True if any value in the Series is a Likert answer.
+    """
+    return x.apply(is_likert_answer).any() or  ('How strongly do you agree or disagree'.lower() in x.name.lower())
+
+
+def convert_likert_to_numeric(x):
+    """
+    Converts a Likert response to a numeric value (if possible).
+    """
+    if len(x) == 0:
+        return np.nan
+    return int(x[0])
+
+
+def add_likert_columns(questions, df_pre, df_post):
+    """
+    Adds a boolean column to questions DataFrame indicating Likert questions.
+    """
+    likert_columns = set(df_pre.columns[df_pre.apply(is_likert_column)]).union(
+        set(df_post.columns[df_post.apply(is_likert_column)])
+    )
+    questions["is_likert"] = questions["question"].apply(lambda x: x in likert_columns)
+    questions.loc[questions["is_likert"], "question_category"] = "likert"
+
+
+def add_retrospective_columns(questions):
+    """
+    Adds a boolean column to questions DataFrame indicating retrospective questions.
+    """
+    questions["is_retrospective"] = questions["question"].apply(
+        is_retrospective_question
+    )
+    questions.loc[questions["is_retrospective"], "question_category"] = "retrospective"
+# We need to reconstruct the parent demographic question. The API returns this split accross
+
+education_map = {
+    "": 0,
+    "Less than High School": 1,
+    "High School Diploma/GED": 2,
+    "Some College/ Associate Degree": 3,
+    "Bachelor’s Degree": 4,
+    "Master’s Degree or higher": 5,
+}
+
+def process_parent_questions(questions, df_pre, df_post, sep=2):
+    """
+    Combines parent demographic questions split across multiple columns into single columns.
+    """
+    # identify the parent education and gender questions.
+    parent1_edu = questions.loc[
+        questions["question"].str.contains("Parent/Guardian 1")
+    ]["question"][sep:]
+    parent1_gen = questions.loc[
+        questions["question"].str.contains("Parent/Guardian 1")
+    ]["question"][:sep]
+
+    parent2_edu = questions.loc[
+        questions["question"].str.contains("Parent/Guardian 2")
+    ]["question"][sep:]
+    parent2_gen = questions.loc[
+        questions["question"].str.contains("Parent/Guardian 2")
+    ]["question"][:sep]
+
+    
+    # get the highest education level of the parent
+    df_pre["Parent 1 Education"] = df_pre[parent1_edu].apply(
+        lambda x: max(x, key=lambda i: education_map.get(i, 0)) or "(empty)", axis=1
+    )
+    df_pre["Parent 2 Education"] = df_pre[parent2_edu].apply(
+        lambda x: max(x, key=lambda i: education_map.get(i, 0)) or "(empty)", axis=1
+    )
+    df_pre["Parent 1 Gender"] = df_pre[parent1_gen].apply(
+        lambda x: max(x) or "(empty)", axis=1
+    )
+
+    df_pre["Parent 2 Gender"] = df_pre[parent2_gen].apply(
+        lambda x: max(x) or "(empty)", axis=1
+    )
+
+    # add these to the questions
+    new_questions = [
+        {
+            "question": "Parent 1 Education",
+            "both": False,
+            "in_pre": True,
+            "in_post": False,
+            "tag_pre": questions.loc[
+                questions["question"].str.contains("Parent/Guardian 1")
+            ]["tag_pre"][sep:].values[0],
+            "tag_post": None,
+            "question_category": "demographics",
+            "is_likert": False,
+        },
+        {
+            "question": "Parent 1 Gender",
+            "both": False,
+            "in_pre": True,
+            "in_post": False,
+            "tag_pre": questions.loc[
+                questions["question"].str.contains("Parent/Guardian 1")
+            ]["tag_pre"][:sep].values[0],
+            "tag_post": None,
+            "question_category": "demographics",
+            "is_likert": False,
+        },
+        {
+            "question": "Parent 2 Education",
+            "both": False,
+            "in_pre": True,
+            "in_post": False,
+            "tag_pre": questions.loc[
+                questions["question"].str.contains("Parent/Guardian 2")
+            ]["tag_pre"][sep:].values[0],
+            "tag_post": None,
+            "question_category": "demographics",
+            "is_likert": False,
+        },
+        {
+            "question": "Parent 2 Gender",
+            "both": False,
+            "in_pre": True,
+            "in_post": False,
+            "tag_pre": questions.loc[
+                questions["question"].str.contains("Parent/Guardian 2")
+            ]["tag_pre"][:sep].values[0],
+            "tag_post": None,
+            "question_category": "demographics",
+            "is_likert": False,
+        },
+    ]
+    # remove the old questions
+    questions = questions.loc[~questions["question"].isin(parent1_edu)]
+    questions = questions.loc[~questions["question"].isin(parent2_edu)]
+    questions = questions.loc[~questions["question"].isin(parent1_gen)]
+    questions = questions.loc[~questions["question"].isin(parent2_gen)]
+    # add the new questions
+    questions = pd.concat([questions, pd.DataFrame(new_questions)], ignore_index=True)
+
+    return (
+        questions,
+        parent1_edu.tolist()
+        + parent2_edu.tolist()
+        + parent1_gen.tolist()
+        + parent2_gen.tolist(),
+    )
+
+
+def process_race_questions(questions, df_pre, df_post):
+    """
+    Combines race questions into a single 'Student Race' column.
+    """
+    race_questions = questions.loc[
+        questions["question"].str.contains("With which race do you identify")
+    ]["question"]
+
+    df_pre["Student Race"] = df_pre[race_questions].apply(
+        lambda v: frozenset(filter(bool, v)), axis=1
+    ).apply(lambda x: x if len(x) > 0 else frozenset(["(empty)"]))
+
+    new_questions = [
+        {
+            "question": "Student Race",
+            "both": False,
+            "in_pre": True,
+            "in_post": False,
+            "tag_pre": questions.loc[
+                questions["question"].str.contains("With which race do you identify")
+            ]["tag_pre"].values[0],
+            "tag_post": None,
+            "question_category": "demographics",
+            "is_likert": False,
+        },
+    ]
+
+    questions = questions.loc[~questions["question"].isin(race_questions)]
+    questions = pd.concat([questions, pd.DataFrame(new_questions)], ignore_index=True)
+
+    return questions, race_questions
+
+
+def process_hispanic_questions(questions, df_pre, df_post):
+    """
+    Combines Hispanic origin questions into a single 'Student Hispanic Origin' column.
+    """
+    hispanic_questions = questions.loc[
+        questions["question"].str.contains("Hispanic")
+    ]["question"].values[0]
+
+    def translate(x):
+        if x == "Yes":
+            return "Hispanic"
+        elif x == "No":
+            return "Not Hispanic"
+        else:
+            return x
+
+    df_pre["Hispanic"] = df_pre[hispanic_questions]
+    #     lambda x: translate(x).strip()
+    # ).apply(
+    #     lambda x: x if len(x) > 0 else frozenset(["(empty)"])
+    # )
+
+    new_questions = [
+        {
+            "question": "Hispanic",
+            "both": False,
+            "in_pre": True,
+            "in_post": False,
+            "tag_pre": questions.loc[
+                questions["question"].str.contains("Hispanic")
+            ]["tag_pre"].values[0],
+            "tag_post": None,
+            "question_category": "demographics",
+            "is_likert": False,
+        },
+    ]
+
+    questions = questions.loc[~questions["question"].isin([hispanic_questions])]
+    questions = pd.concat([questions, pd.DataFrame(new_questions)], ignore_index=True)
+
+    return questions, hispanic_questions
+
+# 19. With which gender do you identify? - Prefer to Self Describe - Text', '19. With which gender do you identify? - Selected Choice'
+def process_gender_questions(questions, df_pre, df_post):
+    """
+    Combines gender identity questions into a single 'Student Gender' column.
+    """
+    # combine
+    gender_questions = questions.loc[
+        questions["question"].str.contains("With which gender do you identify")
+    ]["question"]
+
+    df_pre["Student Gender"] = (
+        df_pre[gender_questions]
+        .apply(lambda v: frozenset(filter(bool, v)), axis=1)
+        .apply(lambda x: x if len(x) > 0 else frozenset(["(empty)"]))
+    )
+
+    new_questions = [
+        {
+            "question": "Student Gender",
+            "both": False,
+            "in_pre": True,
+            "in_post": False,
+            "tag_pre": questions.loc[
+                questions["question"].str.contains("With which gender do you identify")
+            ]["tag_pre"].values[0],
+            "tag_post": None,
+            "question_category": "demographics",
+            "is_likert": False,
+        },
+    ]
+
+    questions = questions.loc[~questions["question"].isin(gender_questions)]
+    questions = pd.concat([questions, pd.DataFrame(new_questions)], ignore_index=True)
+
+    return questions, gender_questions
+
+
+school_level_map = {
+    # key: [high school, college]
+    "First Year": {'hs': 9, 'college': 13, 'other': 999},
+    "Second Year": {'hs': 10, 'college': 14, 'other': 999},
+    "Third Year": {'hs': 11, 'college': 15, 'other': 999},
+    "Fourth Year": {'hs': 12, 'college': 16, 'other': 999},
+}
+
+school_level_map_hco = {
+    0: 'hs',
+    1: 'college',
+    2: 'other',
+}
+
+school_level_map = {
+    # key: [high school, college]
+    "First Year": {'hs': 9, 'college': 13, 'other': 999},
+    "Second Year": {'hs': 10, 'college': 14, 'other': 999},
+    "Third Year": {'hs': 11, 'college': 15, 'other': 999},
+    "Fourth Year": {'hs': 12, 'college': 16, 'other': 999},
+}
+
+school_level_map_hco = {
+    0: 'hs',
+    1: 'college',
+    2: 'other',
+}
+
+def map_school_level(v, force_number=False):
+    try:
+        number = map(
+            lambda i, l: school_level_map.get(l, {}).get(school_level_map_hco.get(i, 2), 999), # type: ignore
+                *zip(*enumerate(v))
+                )
+        number = min(number)
+        if len(v) == 4:
+            if v[3] != '':
+                # if it has a number, extract it
+                other_val = [int(x) for x in v[3].split() if x.isdigit()]
+                if other_val:
+                    if other_val[0] <= number and number != 999:
+                       number = other_val[0]
+                elif number == 999:
+                    number = v[3] if not force_number else 999
+                        
+        return number if number < 999 else np.nan
+    except Exception as e:
+        return np.nan
+
+def process_school_questions(questions, df_pre, df_post):  # school questions
+    """
+    Combines school level questions into a single 'Student School Level' column.
+    """
+    # combine the race questions
+    # Goes into Are you in high school, college, other
+    school_questions = questions.loc[questions["question"].str.contains("Are you in")][
+        "question"
+    ]
+
+    # what magic is frozenset(filter(bool,v)) doing? it is removing all the empty strings from the list
+    df_pre["Student School Level"] = (
+        df_pre[school_questions]
+        .apply(lambda v: list(v), axis=1)
+        .apply(lambda x: x if len(x) > 0 else frozenset(["(empty)"]))
+    )
+    
+    
+    df_pre["Student Grade Level"] = df_pre["Student School Level"].apply(
+        lambda v: map_school_level(v, force_number=True)
+    )
+    
+    
+    
+    
+    new_questions = [
+        {
+            "question": "Student School Level",
+            "both": False,
+            "in_pre": True,
+            "in_post": False,
+            "tag_pre": questions.loc[questions["question"].str.contains("Are you in")][
+                "tag_pre"
+            ].values[0],
+            "tag_post": None,
+            "question_category": "demographics",
+            "is_likert": False,
+        },
+        {
+            "question": "Student Grade Level",
+            "both": False,
+            "in_pre": True,
+            "in_post": False,
+            "tag_pre": questions.loc[questions["question"].str.contains("Are you in")][
+                "tag_pre"
+            ].values[0],
+            "tag_post": None,
+            "question_category": "demographics",
+            "is_likert": False,
+        },
+    ]
+
+    questions = questions.loc[~questions["question"].isin(school_questions)]
+    questions = pd.concat([questions, pd.DataFrame(new_questions)], ignore_index=True)
+
+    return questions, school_questions
+
+
+def process_activity_questions(questions, df_pre, df_post):
+    """
+    Combines activity reflection questions into a single 'Favorite Activity' column.
+    """
+    # school questions
+    # combine the race questions
+    # escape cuz it treats it like a regex
+    activity_question = questions.loc[
+        questions["question"].str.contains("Which activity \(or activities\) did you")
+    ]["question"]
+
+    # what magic is frozenset(filter(bool,v)) doing? it is removing all the empty strings from the list
+    df_post["Favorite Activitiy"] = (
+        df_post[activity_question]
+        .apply(lambda v: frozenset(filter(bool, v)), axis=1)
+        .apply(lambda x: x if len(x) > 0 else frozenset(["(empty)"]))
+    )
+
+    new_questions = [
+        {
+            "question": "Favorite Activitiy",
+            "both": False,
+            "in_pre": False,
+            "in_post": True,
+            "tag_pre": questions.loc[
+                questions["question"].str.contains(
+                    "Which activity \(or activities\) did you"
+                )
+            ]["tag_post"].values[0],
+            "tag_post": None,
+            "question_category": "reflection",
+            "is_likert": False,
+        },
+    ]
+
+    questions = questions.loc[~questions["question"].isin(activity_question)]
+    questions = pd.concat([questions, pd.DataFrame(new_questions)], ignore_index=True)
+
+    return questions, activity_question
+
+def index_to_multindex(columns):
+    return pd.MultiIndex.from_tuples([
+        (col, '') if not isinstance(col, tuple) else col  # promote strings to (col, '')
+        for col in columns
+    ])
+
+def multiindex_to_index(columns):
+    return pd.Index([
+        col[0] if col[1]=='' else col  # demote (col, '') to col
+        for col in columns
+    ])
+
+def safe_join(val):
+    if isinstance(val, str):
+        return val
+    elif hasattr(val, '__iter__') and not isinstance(val, (str, bytes)):
+        return '_'.join(map(str, val))
+def to_flatindex(df, string = False):
+    # flatten the multiindex columns
+    dfcopy = df.copy()
+    index = multiindex_to_index(dfcopy.columns)
+    if string:
+        index = pd.Index([safe_join(s) for s in index])
+    dfcopy.columns = index
+    return dfcopy
+
+def to_multindex(df):
+    # convert the columns to a multiindex
+    dfcopy = df.copy()
+    dfcopy.columns = index_to_multindex(dfcopy.columns)
+    return dfcopy
+
+def process_confused_questions(questions, df_pre, df_post):
+    """
+    Combines 'most difficult or confusing activity' questions into a single column.
+    """
+    # school questions
+    # combine the race questions
+    # escape cuz it treats it like a regex
+    _question = questions.loc[
+        questions["question"].str.contains(
+            "Which activity was the most difficult or confusing"
+        )
+    ]["question"]
+
+    # what magic is frozenset(filter(bool,v)) doing? it is removing all the empty strings from the list
+    df_post["Which activity was the most difficult or confusing"] = (
+        df_post[_question]
+        .apply(lambda v: frozenset(filter(bool, v)), axis=1)
+        .apply(lambda x: x if len(x) > 0 else frozenset(["(empty)"]))
+    )
+
+    new_questions = [
+        {
+            "question": "Which activity was the most difficult or confusing",
+            "both": False,
+            "in_pre": False,
+            "in_post": True,
+            "tag_pre": questions.loc[
+                questions["question"].str.contains(
+                    "Which activity was the most difficult or confusing"
+                )
+            ]["tag_post"].values[0],
+            "tag_post": None,
+            "question_category": "reflection",
+            "is_likert": False,
+        },
+    ]
+
+    questions = questions.loc[~questions["question"].isin(_question)]
+    questions = pd.concat([questions, pd.DataFrame(new_questions)], ignore_index=True)
+
+    return questions, _question
+
+
+def process_esl_questions(questions, df_pre, df_post):
+    """
+    Combines ESL (English as a Second Language) questions into a single column.
+    """
+    # school questions
+    # combine
+    esl_questions = questions.loc[
+        questions["question"].str.contains("Is English the primary spoken")
+    ]["question"]
+
+    def isESL(val):
+        if val == "No":
+            return "ESL"
+        elif val == "Yes":
+            return "Not ESL"
+        elif val == "":
+            return "(empty)"
+        return val
+
+    df_pre["Student ESL"] = df_pre[esl_questions].apply(
+        lambda x: next((isESL(i) for i in x), ("(empty)")), axis=1
+    )
+
+    new_questions = [
+        {
+            "question": "Student ESL",
+            "both": False,
+            "in_pre": True,
+            "in_post": False,
+            "tag_pre": questions.loc[
+                questions["question"].str.contains("Is English the primary spoken")
+            ]["tag_pre"].values[0],
+            "tag_post": None,
+            "question_category": "demographics",
+            "is_likert": False,
+        },
+    ]
+    questions = questions.loc[~questions["question"].isin(esl_questions)]
+    questions = pd.concat([questions, pd.DataFrame(new_questions)], ignore_index=True)
+    return questions, esl_questions
+
+
+def process_likert_columns(df, questions):
+    """
+    Converts Likert columns in the DataFrame to numeric values using convert_likert_to_numeric().
+    """
+    # convert the likert columns to numeric
+    for col in df.columns:
+        if col in questions["question"].values:
+            if questions.loc[questions["question"] == col]["is_likert"].values[0]:
+                df[col] = df[col].apply(lambda x: convert_likert_to_numeric(x))
+    return df
+
+
+def add_content_question_meta(questions, description_pre, description_post, quiet=True):
+    """
+    Adds metadata (answers, groups, summaries) to the questions DataFrame from qa_pairs.json.
+    """
+    """All changeds are don in place"""
+    with open("qa_pairs.json", "r") as f:
+        qa_pairs = json.load(f)
+
+    if not quiet:
+        print(f"There are {len(qa_pairs)} QA pairs")
+
+    questions_and_answers = {q["question"]: q["answer"] for q in qa_pairs}
+
+    # make sure every q & a is in description_pre_tex and description_post
+    for w in qa_pairs:
+        question = w["question"]
+        if (question not in description_pre) and (question not in description_post):
+            if not quiet:
+                print(f"Removing question {question} from qa_pairs")
+            del questions_and_answers[question]
+
+    # Build a mapping from question to groups
+    question_to_groups = {q["question"]: q.get("group", []) for q in qa_pairs}
+    questions["groups"] = (
+        questions["question"]
+        .map(question_to_groups)
+        .apply(lambda x: frozenset(x) if str(x) != "nan" else frozenset([]))
+    )
+
+    # in questions add an empty column for the answer and the short version of the question
+    questions["answer"] = None
+    questions["short_question"] = None
+
+    # for questions where is_likert is true, set the short question to the nlp_summary.create_summary
+    questions["short_question"] = questions["question"].apply(
+        lambda x: nlp_summary.create_summary(x.split("? -", maxsplit=1)[-1].strip(), 6)
+    )
+
+    questions["answer"] = questions["question"].apply(
+        lambda x: questions_and_answers[x] if x in questions_and_answers else None
+    )
+
+    questions.loc[
+        questions["question"].str.contains("CosmicDS"), "question_category"
+    ] = "intro"
+    questions.loc[
+        questions["question"].str.contains("Duration \(in seconds\)"),
+        "question_category",
+    ] = "stat"
+    questions.loc[
+        questions["question"].str.contains("Finished"),
+        "question_category",
+    ] = "stat"
+    questions.loc[
+        questions["question"].str.contains("Progress"),
+        "question_category",
+    ] = "stat"
+    questions.loc[
+        questions["both"] & (questions["question_category"].apply(lambda x: x is None)),
+        "question_category",
+    ] = "science"
+
+    assert (
+        ~questions.groupby("question_category").get_group("science")["answer"].isnull()
+    ).any(), "Some science questions do not have answers"
+
+    return questions
+
+
+def add_likert_meta(questions):
+    """
+    Adds Likert group and negate metadata to the questions DataFrame from likert_questions.json.
+    """
+    with open("likert_questions.json", "r") as f:
+        likert_questions_meta = json.load(f)
+
+    likert_groups = {l["question"]: l["group"] for l in likert_questions_meta}
+    likert_negate = {l["question"]: l["score"] == "-1" for l in likert_questions_meta}
+
+    # for all of the likert questions add the "group" as a likert_group_column and the "score" is the likert_negate" bool (True/False for -1/1)
+    questions["likert_group"] = questions["question"].apply(
+        lambda x: frozenset(likert_groups[x]) if x in likert_groups else frozenset([])
+    )
+
+    questions["likert_negate"] = questions["question"].apply(
+        lambda x: likert_negate[x] if x in likert_negate else None
+    )
+
+    questions.loc[questions.is_likert, "groups"] = questions.loc[
+        questions.is_likert, "likert_group"
+    ]
+
+    return questions
+
+def is_retrospective_question(question):
+    """
+    Checks if a question is a retrospective question based on its content.
+    """
+    qs = [
+        "14. A STEM professional is a person who uses science, technology, engineering, or mathematics in their everyday work.Think back to the time just before this program began, and select the picture that best describes the overlap of the image you had of yourself and your image of what a STEM professional is.",
+        "15. Select the picture that best describes the overlap of the image you currently have of yourself and your image of what a STEM professional is.",
+        "16. How strongly do you agree or disagree with the following statements? - I enjoyed participating in the Cosmic Data Story activities",
+        "16. How strongly do you agree or disagree with the following statements? - I learned something new from the Cosmic Data Story activities",
+        "19. Please tell us something you learned or discovered while completing the Hubble Data Story.",
+        "20. Do you have any other questions, comments, or suggestions?",
+        "Favorite Activitiy",
+        "Which activity was the most difficult or confusing",
+    ]
+    return question in qs
+
+
+def retrospective_score(v):
+    return{
+    'A': 1, 'B': 2, 'C': 3, 'D': 4, 'E': 5, 'F': 6, 'G': 7
+}.get(v, np.nan)
+
+
+
+# some data cleaning functions
+def clean_esl(val):
+    if val != "ESL" and val != "Not ESL":
+        return "Not ESL"
+    return val
+
+def clean_gender(fval: frozenset):
+    if isinstance(fval, frozenset):
+        val = list(fval)
+    else:
+        if pd.isna(fval) or fval == "(empty)":
+            return pd.NA
+        
+    if len(val) == 1:
+        if val[0] in ["Male", "Female"]:
+            return val[0]
+        
+    if val[0] == "(empty)" or len(val) == 0:
+        return pd.NA
+    
+    return "Other"
+    
+def clean_race(val):
+    if (
+        not isinstance(val, frozenset)
+        or len(val) == 0 
+        or "(empty)" in val 
+        ):
+        return pd.NA
+    
+    if any("Prefer" in v for v in val):
+        val = [v for v in val if "Prefer" not in v] # type: ignore
+    
+    if len(val) == 0:
+        return pd.NA
+        
+
+    if len(val) == 1:
+        return next(iter(val))
+    else:
+        return "Multi-ethnic"
+            
+
+def row_is_correct(row):
+    if row["question_category"] != "science":
+        if row["question_category"] == "likert":
+            return row["response"]
+        if row["is_likert"] == True:
+            return row["response"]
+        if row["question_category"] == "retrospective":
+            return retrospective_score(row["response"])
+        
+        return np.nan
+    
+    
+        
+    try:
+        return int(row["answer"].lower() in row[f"response"].lower())
+    except Exception as e:
+        return 0
+    
+def merge_questions_into_dataframes(
+    df_pre, df_post, questions, id_column, id_columns, pre_columns=[]
+):
+    """
+    Melts pre and post DataFrames to long format and merges with question metadata.
+    """
+    # melt: turns dataframe into long format. so the columns become rows except for the id_Vars and value_name
+
+    df_pre_merged = df_pre.melt(
+        # id_vars=[id_column], var_name="question", value_name="response_pre"
+        id_vars=id_columns + pre_columns,
+        var_name="question",
+        value_name="response",
+    )
+    df_post_merged = df_post.melt(
+        # id_vars=[id_column], var_name="question", value_name="response_post"
+        id_vars=id_columns,
+        var_name="question",
+        value_name="response",
+    )
+    # merge the melted dataframes with the question metadata
+    df_pre_merged = df_pre_merged.merge(
+        questions, left_on="question", right_on="question", how="left"
+    )
+    df_post_merged = df_post_merged.merge(
+        questions, left_on="question", right_on="question", how="left"
+    )
+    # drop any row where the question is not in the metadata
+    df_pre_merged.dropna(subset=["question"], inplace=True)
+    df_post_merged.dropna(subset=["question"], inplace=True)
+
+    df_pre_merged[id_column] = df_pre_merged[id_column].astype(str).str.lower()
+    df_post_merged[id_column] = df_post_merged[id_column].astype(str).str.lower()
+    
+    df_pre_merged['correct'] = df_pre_merged.apply(row_is_correct, axis=1)
+    df_post_merged['correct'] = df_post_merged.apply(row_is_correct, axis=1)
+    
+    # df_pre_merged[id_column] = pd.Categorical(
+    #     df_pre_merged[id_column].astype(str).str.lower(), 
+    #     categories=df_pre[id_column].astype(str).str.lower(), ordered=True)
+    # df_post_merged[id_column] = pd.Categorical(
+    #     df_post_merged[id_column].astype(str).str.lower(), 
+    #     categories=df_post[id_column].astype(str).str.lower(), ordered=True)
+    
+    # df_pre_merged = df_pre_merged.sort_values(by=[id_column])
+    # df_post_merged = df_post_merged.sort_values(by=[id_column])
+
+
+    # print(len(df_pre_merged), len(df_post_merged))
+    return df_pre_merged, df_post_merged
+
+def only_stage5_free_responses(free_response):
+    # free_response = row['free_responses']
+    out = {}
+    if isinstance(free_response, dict):
+        for k, v in free_response.items():
+            if v['stage'] == 'class_results_and_uncertainty':
+                out[k] = v['response']
+    return out
+
+def mc_only_5_score(mc_scoring):
+    out = {}
+    for k, v in mc_scoring.items():
+        if v['stage'] == 'class_results_and_uncertainty':
+            out[k] = v['score']
+    return out
+
+
+def mc_full_score(mc_scoring):
+    out = 0
+    for k, v in mc_scoring.items():
+            if str(v['score']).isnumeric():
+                out += int(v['score'])
+    return out
+
+def format_progress(row):
+    max_stage = row['max_stage_index']
+    progress = row['progress']
+
+    if progress == 1:
+        return int(max_stage) + 1
+    else:
+        return int(max_stage) + np.around(float(progress), 2)
+def safe_sum(x):
+    """
+    Safely sums a list of values, ignoring non-numeric values.
+    """
+    if None in x or pd.isna(x):
+        print("Warning: None or NaN found in input list.")
+    return sum(v for v in x if not isinstance(v, str) and pd.notna(v))
+
+def get_student_states(df_combined: pd.DataFrame, id_column):
+    student_ids = list(filter(lambda x: x.isnumeric(), df_combined[id_column].str.strip().unique()))
+    students_states = db.get_student_progress_state(student_ids)
+    if students_states is None or students_states.empty:
+        students_states = pd.DataFrame(columns=['student_id', 'free_responses', 'mc_scoring', 'overall_progress','mc_stage_5_score', 'full_mc_score', 'finished_story'])
+    else: 
+        students_states['free_responses'] = students_states['free_responses'].apply(json.loads).apply(only_stage5_free_responses)
+        students_states['mc_stage_5_scoring'] = students_states['mc_scoring'].apply(json.loads).apply(mc_only_5_score)
+        students_states['mc_stage_5_score'] = students_states['mc_stage_5_scoring'].apply(lambda x: safe_sum(x.values()) if (isinstance(x, dict)) else 0)
+        students_states['full_mc_score'] = students_states['mc_scoring'].apply(json.loads).apply(mc_full_score)
+        students_states['overall_progress'] = students_states.apply(format_progress, axis=1)
+        students_states['finished_story'] = students_states['overall_progress'] >= 7
+        students_states = students_states[['student_id', 'free_responses', 'mc_scoring', 'overall_progress','mc_stage_5_score', 'full_mc_score', 'finished_story']]
+    
+    
+    return students_states 
+
+
+    
+
+def get_class_info(df_combined: pd.DataFrame, id_column):
+    """
+    Merges class and educator info from the database into the combined DataFrame.
+    """
+    student_ids = list(filter(lambda x: x.isnumeric() and int(x)>5000, df_combined[id_column].str.strip().str.split("_").apply(lambda x:x[0] ).unique()))
+    df_combined['clean_id'] = df_combined[id_column].str.strip().str.split("_").apply(lambda x:x[0])
+    class_info = db.get_students_classes_info(student_ids)
+    
+    # Helper function to infer values from pre/post inputs
+    def infer_common_value(pre_val, post_val):
+        pre_val = str(pre_val).strip().lower() if pd.notna(pre_val) else ""
+        post_val = str(post_val).strip().lower() if pd.notna(post_val) else ""
+        if pre_val == post_val:
+            return pre_val
+        return post_val or pre_val or ""
+
+    # Handle case when no class_info is available
+    if class_info is None or class_info.empty:
+        df_combined["class_name"] = df_combined.apply(
+            lambda row: infer_common_value(
+                row.get("CosmicDS Pre-Survey - Course/Section_pre"),
+                row.get("CosmicDS Pre-Survey - Course/Section_post")
+            ).title(), axis=1
+        )
+        df_combined["Educator"] = df_combined.apply(
+            lambda row: infer_common_value(
+                row.get("CosmicDS Pre-Survey - Instructor's Last Name_pre"),
+                row.get("CosmicDS Pre-Survey - Instructor's Last Name_post")
+            ).title(), axis=1
+        )
+        return df_combined
+    
+
+    class_info["student_id"] = class_info["student_id"].astype(str).str.lower() 
+    
+    class_info["class_name"] = class_info["name"].astype(str).str.strip().str.lower()
+    class_info["Educator"] = (
+        class_info["first_name"].astype(str).str.strip().str.title() + " " +
+        class_info["last_name"].astype(str).str.strip().str.title()
+    )
+    class_info["Educator_Last"] = class_info["last_name"].astype(str).str.strip().str.lower()
+
+    # Select and rename necessary columns
+    class_info_subset = class_info[["student_id", "class_name", "id", "Educator", "Educator_Last", "educator_id"]].rename(
+        columns={"id": "class_id"}
+    )
+
+
+
+    # merge the class info into the combined dataframe
+    df_combined = df_combined.copy()
+    df_combined[id_column] = df_combined[id_column].astype(str).str.lower()
+    df_combined = df_combined.merge(
+        class_info_subset, left_on='clean_id', right_on="student_id", how="left"
+    )
+    
+    # Infer missing class_name and Educator_Last from survey
+    inferred_class_names = df_combined.apply(
+        lambda row: infer_common_value(
+            row.get("CosmicDS Pre-Survey - Course/Section_pre"),
+            row.get("CosmicDS Pre-Survey - Course/Section_post")
+        ),
+        axis=1
+    ).str.lower()
+
+    inferred_educators_last = df_combined.apply(
+        lambda row: infer_common_value(
+            row.get("CosmicDS Pre-Survey - Instructor's Last Name_pre"),
+            row.get("CosmicDS Pre-Survey - Instructor's Last Name_post")
+        ),
+        axis=1
+    ).str.lower()
+    
+    ## Fill in missing class names and educator last names
+    df_combined["class_name"] = df_combined["class_name"].combine_first(inferred_class_names).str.title()
+    df_combined["Educator_Last"] = df_combined["Educator_Last"].combine_first(inferred_educators_last)
+
+    # Rebuild Educator full name if missing
+    df_combined["Educator"] = df_combined["Educator"].fillna(
+        df_combined["Educator_Last"].apply(lambda x: str(x).strip().title() if pd.notna(x) else "")
+    )
+
+    # Fill in class_id based on same class_name and Educator_Last
+    mask_missing_class_id = df_combined["class_id"].isna()
+    lookup_group = df_combined[~df_combined["class_id"].isna()].copy()
+
+    # --- Lookup prep ---
+    # Create composite key for grouping
+    lookup_group = df_combined[~df_combined["class_id"].isna()].copy()
+    lookup_group["key"] = (
+        lookup_group["class_name"].str.lower().fillna("") + "|" + 
+        lookup_group["Educator_Last"].str.lower().fillna("")
+    )
+
+    # Drop duplicates, keeping the first valid entry for each key
+    lookup_reference = lookup_group.drop_duplicates("key")[["key", "class_id", "Educator", "educator_id"]].set_index("key")
+
+    class_id_lookup = lookup_reference["class_id"].to_dict()
+    educator_lookup = lookup_reference["Educator"].to_dict()
+    educator_id_lookup = lookup_reference["educator_id"].to_dict()
+
+    # --- Build fill keys for full df_combined ---
+    fill_keys = (
+        df_combined["class_name"].str.lower().fillna("") + "|" +
+        df_combined["Educator_Last"].str.lower().fillna("")
+    )
+
+    # --- Fill missing class_id and Educator where class_id is currently missing ---
+    mask_missing_class_id = df_combined["class_id"].isna()
+
+    df_combined.loc[mask_missing_class_id, "class_id"] = fill_keys[mask_missing_class_id].map(class_id_lookup)
+    df_combined.loc[mask_missing_class_id, "Educator"] = fill_keys[mask_missing_class_id].map(educator_lookup)
+    df_combined.loc[mask_missing_class_id, "educator_id"] = fill_keys[mask_missing_class_id].map(educator_id_lookup)
+    
+    return df_combined
+
+def preview_group(grouped):
+    """
+    Returns the first group from a pandas GroupBy object for previewing.
+    """
+    groups = grouped.groups
+    first_group = next(iter(groups))
+    group = grouped.get_group(first_group)
+    return group
+
+
+def pooled_variance(variances, sizes=None):
+    """
+    Calculates pooled variance from a list of variances and sample sizes.
+    """
+    if sizes is None:
+        return np.sum(variances) / len(variances)
+
+    else:
+        sizes = np.asarray(sizes)
+        variances = np.asarray(variances)
+        return np.sum((sizes - 1) * variances) / np.sum(sizes - 1)
+
+def effect_size(pre_vals, post_vals):
+    """
+    Calculates Cohen's d effect size between pre and post values.
+    Cohen's d for Welch test
+    The Welch test is a variant of t-test used when the equality of variance can't be assumed. 
+    The effect size can be computed by dividing the mean 
+    difference between the groups by the “averaged” standard deviation.
+    https://www.datanovia.com/en/lessons/t-test-effect-size-using-cohens-d-measure/
+    """
+    # calculate the effect size
+    mean_diff = np.nanmean(post_vals - pre_vals, axis=0)
+    # pooled_std = np.sqrt(
+    #     (np.nanstd(pre_vals, axis=0) ** 2 + np.nanstd(post_vals, axis=0) ** 2) / 2
+    # )
+    pooled_std = np.sqrt(pooled_variance(
+        [np.nanstd(pre_vals, axis=0) ** 2, np.nanstd(post_vals, axis=0) ** 2],
+        [len(pre_vals), len(post_vals)],
+    ))
+    if pooled_std == 0:
+        return np.nan
+    return np.around(mean_diff / pooled_std, 4)
+
+
+def flatten(l):
+    """
+    Flattens a list of lists or splits a string by comma.
+    """
+    if isinstance(l, str):
+        return l.split(",")
+    if hasattr(l, "__iter__"):
+        o = []
+        for i, item in enumerate(l):
+            if hasattr(item, "__iter__") and not isinstance(item, str):
+                for j in item:
+                    o.append(j)
+            else:
+                o.append(item)
+        return o
+    return [item for sublist in l for item in sublist ]
+
+
+def q_to_num(qtag):
+    """
+    Converts a question tag to a float for sorting (e.g., Q1 -> 1.0).
+    """
+    try:
+        return float(qtag[1:].replace("_", ".").upper().replace(".TEXT", ""))
+    except ValueError:
+        # regex to extract the number from the string
+        match = regex.search(r"(\d+)", qtag)
+        if match:
+            return float(match.group(1))
+        else:
+            return np.inf
+
+
+def create_stats_for_pre(group, columns):
+    """
+    Returns counts and percentages for pre-survey responses in a group.
+    """
+    # counts = group["response_pre"].explode().value_counts()
+    # percentages = group["response_pre"].explode().value_counts(normalize=True)
+    # return pd.DataFrame(
+    #     {"counts": counts, "percentages": np.around(percentages * 100, 1)}
+    # ).rename_axis("response")
+    series = []
+    for col in columns:
+        counts = group[col].explode().value_counts()
+        percentages = group[col].explode().value_counts(normalize=True)
+        series.append(
+            pd.DataFrame(
+                {
+                    "counts": counts,
+                    "percentages": np.around(percentages * 100, 1),
+                }
+            ).rename_axis(col)
+        )
+    return series
+
+
+
+def create_post_reflection_summary(qoip, id_column):
+    """
+    Returns a tuple of pd.Series summarizing post-reflection questions (e.g., open text, likert, activity).
+    Each Series can be written to a single Excel sheet for summary.
+    """
+    qs = [
+        "14. A STEM professional is a person who uses science, technology, engineering, or mathematics in their everyday work.Think back to the time just before this program began, and select the picture that best describes the overlap of the image you had of yourself and your image of what a STEM professional is.",
+        "15. Select the picture that best describes the overlap of the image you currently have of yourself and your image of what a STEM professional is.",
+        "16. How strongly do you agree or disagree with the following statements? - I enjoyed participating in the Cosmic Data Story activities",
+        "16. How strongly do you agree or disagree with the following statements? - I learned something new from the Cosmic Data Story activities",
+        "19. Please tell us something you learned or discovered while completing the Hubble Data Story.",
+        "20. Do you have any other questions, comments, or suggestions?",
+        "Favorite Activitiy",
+        "Which activity was the most difficult or confusing",
+    ]
+    def mapping(v):
+        return{
+        'A': 1, 'B': 2, 'C': 3, 'D': 4, 'E': 5, 'F': 6, 'G': 7
+    }.get(v, np.nan)
+    qs0 = qoip[qoip["question"] == qs[0]]["response_post"].value_counts().rename({'': 'NA'})
+    qs0.sort_index(inplace=True)
+    qs0['mean'] = np.nanmean(qoip[qoip["question"] == qs[0]]["response_post"].apply(mapping).to_numpy())
+    qs0['sttdev'] = np.nanstd(qoip[qoip["question"] == qs[0]]["response_post"].apply(mapping).to_numpy())
+    
+    qs1 = qoip[qoip["question"] == qs[1]]["response_post"].value_counts().rename({'': 'NA'})
+    qs1.sort_index(inplace=True)
+    qs1['mean'] = np.nanmean(qoip[qoip["question"] == qs[1]]["response_post"].apply(mapping).to_numpy())
+    qs1['sttdev'] = np.nanstd(qoip[qoip["question"] == qs[1]]["response_post"].apply(mapping).to_numpy())
+    
+    
+    qs2_likert = qoip[qoip["question"] == qs[2]]["response_post"].value_counts() # 
+    qs2_likert['mean'] = np.nanmean(qoip[qoip["question"] == qs[2]]["response_post"].apply(pd.to_numeric))
+    qs2_likert['sttdev'] = np.nanstd(qoip[qoip["question"] == qs[2]]["response_post"].apply(pd.to_numeric))
+    
+    qs3_likert = qoip[qoip["question"] == qs[3]]["response_post"].value_counts()
+    qs3_likert['mean'] = np.nanmean(qoip[qoip["question"] == qs[3]]["response_post"].apply(pd.to_numeric))
+    qs3_likert['sttdev'] = np.nanstd(qoip[qoip["question"] == qs[3]]["response_post"].apply(pd.to_numeric))
+    
+    qs4_text = qoip[qoip["question"] == qs[4]]["response_post"]
+    filtered_qs4_text = qs4_text != ""
+    qs5_text = qoip[qoip["question"] == qs[5]]["response_post"]
+    filtered_qs5_text = qs5_text != ""
+    qs6_text = qoip[qoip["question"] == qs[6]]["response_post"].explode().value_counts()
+    qs7_text = qoip[qoip["question"] == qs[7]]["response_post"].explode().value_counts()
+    return (
+        pd.Series(qs0, name="Select a picture of a STEM Professional"),
+        pd.Series(qs1, name="Select picture that overlaps you and a STEM Professional"),
+        pd.Series(qs2_likert, name="Enjoyed Participating Likert"),
+        pd.Series(qs3_likert, name="Learned Something New Likert"),
+        pd.Series(
+            qs4_text.values[filtered_qs4_text],
+            name="What do you learn or discover",
+            index=qoip[qoip["question"] == qs[4]][id_column][filtered_qs4_text],
+        ),
+        pd.Series(
+            qs5_text.values[filtered_qs5_text],
+            name="Questions Comments Suggestions",
+            index=qoip[qoip["question"] == qs[5]][id_column][filtered_qs5_text],
+        ),
+        pd.Series(qs6_text ,name="Favorite Activity"),
+        pd.Series(qs7_text, name="Difficult of Confusing Activity"),
+    )
+
+
+from scipy.stats import wilcoxon
+
+
+def wilcoxon_signed_rank_test(pre, post):
+    """
+    Performs a Wilcoxon signed-rank test on pre and post responses.
+    Returns the test statistic and p-value.
+    """
+    if len(pre) == 0 or len(post) == 0:
+        return np.nan, np.nan, np.nan
+
+    try:
+        o = wilcoxon(
+            (post - pre),
+            zero_method="wilcox",
+            alternative="greater",
+            correction=False,
+            method="approx",
+        )
+        return o.statistic, o.pvalue, o.zstatistic  # type: ignore
+    except ValueError as e:
+        print(f"Wilcoxon test failed: {e}")
+        print(f"Pre: {pre}")
+        print(f"Post: {post}")
+        return np.nan, np.nan, np.nan
+
+
+def create_likert_summary(group, force_improved=False, drop_na=False):
+    """
+    Summarizes Likert question responses, including effect size, means, medians, and counts.
+    If force_improved is True, reverses scores for negatively worded questions.
+    """
+    if force_improved:
+        pre_response = group.apply(
+            lambda row: (
+                5 - row["response_pre"] if row["likert_negate"] else row["response_pre"]
+            ),
+            axis=1,
+        )
+        post_response = group.apply(
+            lambda row: (
+                5 - row["response_post"]
+                if row["likert_negate"]
+                else row["response_post"]
+            ),
+            axis=1,
+        )
+    else:
+        pre_response = group["response_pre"]
+        post_response = group["response_post"]
+
+    negate = group["likert_negate"].apply(lambda x: -1 if x else 1)
+    is_na = pre_response.isna() | post_response.isna()
+    pre_nona = pre_response[~is_na]
+    post_nona = post_response[~is_na]
+
+    wstat, wpval, wzstat = wilcoxon_signed_rank_test(
+        pre_nona.astype(float), post_nona.astype(float)
+    )
+
+    summary = pd.Series(
+        {
+            "tag_pre": group["tag_pre"].iloc[0],
+            "effect_size": effect_size(pre_nona, post_nona),
+            # "wilcoxon_stat": wilcoxon_stat,
+            "wilcoxon_p": wpval,
+            "wilcoxon_zstatistic": wzstat,
+            "negate": negate.iloc[0],
+            "mean(Δ)": np.around((post_nona - pre_nona).mean(), 4),
+            "median(Δ)": np.around((post_nona - pre_nona).median(), 4),
+            "pooled_std": np.around(
+                np.sqrt((np.nanstd(pre_nona) ** 2 + np.nanstd(post_nona) ** 2) / 2), 4
+            ),
+            "mean(pre)": np.around(pre_nona.mean(), 4),
+            "mean(post)": np.around(post_nona.mean(), 4),
+            "std(pre)": np.around(pre_nona.std(), 4),
+            "std(post)": np.around(post_nona.std(), 4),
+            "#_of_pre_responses": len(pre_nona),
+            "#_of_post_responses": len(post_nona),
+            "median(pre)": np.around(pre_nona.median(), 4),
+            "median(post)": np.around(post_nona.median(), 4),
+            "min(pre)": pre_nona.min(),
+            "min(post)": post_nona.min(),
+            "max(pre)": pre_nona.max(),
+            "max(post)": post_nona.max(),
+            "group": ", ".join(flatten(group["groups"].unique())),
+        }
+    )
+
+    if not drop_na:
+        summary_na = pd.Series(
+            {
+                "pre_mean_with_no_drop": np.around(pre_response.mean(), 2),
+                "post_mean_with_no_drop": np.around(post_response.mean(), 2),
+                "pre_count_with_no_drop": len(pre_response),
+                "post_count_with_no_drop": len(post_response),
+            }
+        )
+        summary = pd.concat([summary, summary_na])
+
+    return summary
+
+
+def binomial_var(n, nc=None, raw_count_variance=False):
+    """
+    Calculates binomial variance for n trials and nc successes.
+    """
+    if nc is None:
+        nc = sum(n)
+        n = len(n)
+    p = nc / n
+    if raw_count_variance:
+        return n * p * (1 - p)
+    return p * (1 - p) / n
+
+
+
+
+def binomial_effect_size(pre, post, raw_count_variance=True):
+    """
+    Calculates effect size for binary (correct/incorrect) pre/post responses using binomial variance.
+    """
+    n_pre = len(pre)
+    nc_pre = sum(pre)
+    n_post = len(post)
+    nc_post = sum(post)
+
+    p_pre = nc_pre / n_pre
+    p_post = nc_post / n_post
+
+    var_pre = binomial_var(n_pre, nc_pre, raw_count_variance=raw_count_variance)
+    var_post = binomial_var(n_post, nc_post, raw_count_variance=raw_count_variance)
+    pooled = pooled_variance([var_pre, var_post], [n_pre, n_post])
+
+    if raw_count_variance:
+        return (nc_post - nc_pre) / np.sqrt(pooled) if pooled > 0 else float("inf"), np.sqrt(pooled)
+    return (p_post - p_pre) / np.sqrt(pooled) if pooled > 0 else float("inf"), np.sqrt(pooled)
+
+def standardized_differance(pre, post):
+    """
+    Calculates standardized difference between pre and post responses.
+    """
+    n_pre = len(pre)
+    nc_pre = sum(pre)
+    n_post = len(post)
+    nc_post = sum(post)
+    p_pre = nc_pre / n_pre
+    p_post = nc_post / n_post
+    
+    var_pre = binomial_var(n_pre, nc_pre, raw_count_variance=False)
+    var_post = binomial_var(n_post, nc_post, raw_count_variance=False)
+    var = var_pre + var_post
+    
+    if var > 0:
+        return (p_post - p_pre) / np.sqrt(var)
+    else:
+        return float("inf")
+    
+def two_samp_z_for_proportions(pre, post):
+    """
+    Calculates z-statistic for two-sample proportions test.
+    """
+    n_pre = len(pre)
+    nc_pre = sum(pre)
+    n_post = len(post)
+    nc_post = sum(post)
+
+    p_pre = nc_pre / n_pre
+    p_post = nc_post / n_post
+
+    pooled_p = (nc_pre + nc_post) / (n_pre + n_post)
+    z = (p_post - p_pre) / np.sqrt(pooled_p * (1 - pooled_p) * (1 / n_pre + 1 / n_post))
+    
+    return z
+
+def cohens_h(pre, post):
+    """
+    Calculates Cohen's h effect size for binary (correct/incorrect) pre/post responses.
+    """
+    n_pre = len(pre)
+    nc_pre = sum(pre)
+    n_post = len(post)
+    nc_post = sum(post)
+    p_pre = nc_pre / n_pre
+    p_post = nc_post / n_post
+    
+    if p_pre == 0:
+        p_pre = 0.0001
+    if p_post == 0:
+        p_post = 0.0001
+        
+    q_pre = 2 * np.arcsin(np.sqrt(p_pre)) 
+    q_post = 2 * np.arcsin(np.sqrt(p_post)) 
+    
+    return (q_post - q_pre)
+    
+
+def are_correct(group, pre=True):
+    """
+    Returns a boolean Series indicating if each response matches the answer (pre or post).
+    """
+    try:
+        if pre:
+            return group.apply(
+                lambda row: row["answer"].lower() in row["response_pre"].lower(), axis=1
+            )
+        else:
+            return group.apply(
+                lambda row: row["answer"].lower() in row["response_post"].lower(), axis=1
+            )
+    except KeyError:
+        if "response_pre" not in group.columns or "response_post" not in group.columns:
+            return group.apply(
+                lambda row: row["answer"].lower() in row["response"].lower(), axis=1
+            )
+        else:
+            raise KeyError(
+                "Neither 'response_pre' nor 'response_post' nor 'response' columns found in group."
+            )
+
+
+
+
+def create_content_summary(group):
+    """
+    Summarizes content (multiple choice) question responses, including effect size, p-values, and summary sentences.
+    """
+    pre = are_correct(group, pre=True).values
+    post = are_correct(group, pre=False).values
+
+    pre = np.array(pre)
+    post = np.array(post)
+    n_total = len(pre)
+
+    # Count response patterns
+    tt = np.sum((pre == True) & (post == True))
+    tf = np.sum((pre == True) & (post == False))
+    ft = np.sum((pre == False) & (post == True))
+    ff = np.sum((pre == False) & (post == False))
+
+    effect_size, pooled_variance = binomial_effect_size(pre, post, raw_count_variance=True) 
+
+    n_discordant = tf + ft
+    changed_to_true = ft
+    started_false = ft + ff
+    confused = tf
+
+    class fake:
+        pvalue = 1.0
+        statistic = 0.0
+
+    if n_discordant == 0:
+        mcnemar = fake
+    else:
+        mcnemar = binomtest(changed_to_true, n_discordant, p=0.5, alternative="greater")
+
+    if started_false == 0:
+        false_to_true = fake()
+        false_to_true.pvalue = np.nan
+        false_to_true.statistic = np.nan
+    else:
+        false_to_true = binomtest(
+            changed_to_true, started_false, p=0.5, alternative="greater"
+        )
+
+    overall = binomtest(np.sum(post), n_total, np.sum(pre) / n_total)
+
+    def direction(val):
+        return np.sign(val)
+
+    # --- Human-readable overall summary sentence (pre vs post) ---
+
+    net_change = post.sum() - pre.sum()
+    n_total = len(pre)
+
+    if n_discordant == 0:
+        summary_sentence = "No students changed their answers."
+    else:
+        improvement_direction = (
+            "improvement"
+            if net_change > 0
+            else "decline" if net_change < 0 else "no change"
+        )
+
+        significance_label = (
+            "statistically significant"
+            if overall.pvalue < 0.05
+            else "not statistically significant"
+        )
+
+        summary_sentence = (
+            f"There was a {significance_label} {improvement_direction} from pre to post "
+            f"({pre.sum()}/{n_total} correct → {post.sum()}/{n_total} correct, "
+            f"net change = {net_change:+d}). "
+            f"Effect size = {effect_size:.2f}, p = {overall.pvalue:.3f}."
+        )
+
+    if n_discordant == 0:
+        discordant_summary = "No students changed their answers."
+    else:
+        improvement_rate = changed_to_true / n_discordant
+        confusion_rate = confused / n_discordant
+        discordant_significance = (
+            "statistically significant improvement among changers"
+            if mcnemar.pvalue < 0.05
+            else "no statistically significant improvement among changers"
+        )
+        discordant_summary = (
+            f"Among {n_discordant} students who changed, {changed_to_true} improved ({improvement_rate:.1%}) "
+            f"and {confused} regressed ({confusion_rate:.1%}) "
+            f"({discordant_significance}, McNemar p = {mcnemar.pvalue:.3f})."
+        )
+
+    return pd.Series(
+        {
+            "percent_correct_pre": f"{pre.sum() / n_total:.1%}",
+            "percent_correct_post": f"{post.sum() / n_total:.1%}",
+            "pre_to_post_change_percent": f"{(post.sum() - pre.sum()) / n_total:.1%}",
+            
+            "summary": summary_sentence,
+            "effect_size": effect_size,
+            "sqrt_pooled_variance": pooled_variance,
+            "p_value": np.around(overall.pvalue, 6),
+            
+            "cohens_h": cohens_h(pre, post),
+            
+            "mcnemar_statistic": mcnemar.statistic,
+            "mcnemar_p": mcnemar.pvalue,
+            "discordant_summary": discordant_summary,
+            "confused_count": tf,
+            "confused": tf / (tf + tt) if (tf + tt > 0) else np.nan,
+            "confused_p_value": (
+                binomtest(confused, tf + tt, p=0.5, alternative="greater").pvalue
+                if (tf + tt > 0)
+                else np.nan
+            ),
+            "n_discordant": n_discordant,
+            "n_change_to_true": changed_to_true,
+            
+            "standardized_difference": standardized_differance(pre, post),
+            "z_statistic": two_samp_z_for_proportions(pre, post),
+            "false_to_true_p_value": np.around(false_to_true.pvalue, 6),
+            
+            "pre_to_post_change": post.sum() - pre.sum(),
+            
+            "direction": direction(post.sum() - pre.sum()),
+            "tag_pre": group["tag_pre"].iloc[0],
+            "tag_post": group["tag_post"].iloc[0],
+            "pre_correct": pre.sum(),
+            "post_correct": post.sum(),
+            "pre_count": group["response_pre"].count(),
+            "post_count": group["response_post"].count(),
+            "group": ", ".join(flatten(group["groups"].unique())),
+        }
+    )
+
+
+def add_answer_column(questions_both):
+    """
+    Adds columns to a wide-format DataFrame indicating correctness of pre and post responses for each question.
+    """
+
+    def check_correct(row, resp_col, ans_col):
+        resp = row[resp_col]
+        ans = row[ans_col]
+        if pd.isnull(resp) or pd.isnull(ans):
+            return np.nan
+        return int(str(ans).lower() in str(resp).lower())
+
+    # For each question (tag, text), add correctness columns for pre and post
+    qb = questions_both.copy()
+    for tag in qb.columns.get_level_values(1).unique():
+        qtext = qb.columns[qb.columns.get_level_values(1) == tag][0][2]
+        pre_col = ("response_pre", tag, qtext)
+        post_col = ("response_post", tag, qtext)
+        ans_col = ("answer", tag, qtext)
+        qb[("correct_pre", tag, qtext)] = qb.apply(
+            lambda row: check_correct(row, pre_col, ans_col), axis=1
+        )
+        qb[("correct_post", tag, qtext)] = qb.apply(
+            lambda row: check_correct(row, post_col, ans_col), axis=1
+        )
+
+    # Reorder columns so that each correct column is right after its response
+    def reorder_columns(df):
+        cols = []
+        for col in df.columns:
+            if col[0] in ["response_pre", "response_post"]:
+                cols.append(col)
+                correct_col = (
+                    "correct_pre" if col[0] == "response_pre" else "correct_post",
+                    col[1],
+                    col[2],
+                )
+                if correct_col in df.columns:
+                    cols.append(correct_col)
+            elif col[0] == "answer":
+                cols.append(col)
+        return df[cols]
+
+    return reorder_columns(qb)
+
+from scipy.stats import fisher_exact, norm
+def p_to_sigma(p_value):
+    return np.nan_to_num(norm.isf(p_value), float("inf"))
+def fisher_test(pre_correct, pre_total, post_correct, post_total):
+    table = [
+        [post_correct, post_total - post_correct],
+        [pre_correct,  pre_total - pre_correct]
+    ]
+    
+    odds_ratio, p_value = fisher_exact(table, alternative='two-sided')
+    sigma = p_to_sigma(p_value)
+
+    direction = 'no change'
+    if post_correct / post_total > pre_correct / pre_total:
+        direction = 'improvement'
+    elif post_correct / post_total < pre_correct / pre_total:
+        direction = 'decline'
+
+    return {
+        'p_value': p_value,
+        'odds_ratio': odds_ratio,
+        'sigma': sigma,
+        'direction': direction
+    }
+
+
+# Supported via standard GitHub programming aids
+def create_bulk_content_stats(df_pre_merged, df_post_merged):
+    """
+    Creates bulk statistics comparing pre and post content question responses without requiring matched pairs.
+    
+    Parameters:
+    -----------
+    df_pre_merged: pandas DataFrame
+        Pre-survey data in long format with metadata
+    df_post_merged: pandas DataFrame
+        Post-survey data in long format with metadata
+        
+    Returns:
+    --------
+    pandas DataFrame
+        DataFrame containing comparative statistics for each content question
+    """
+    # Filter for content (science) questions
+    pre_content = df_pre_merged[df_pre_merged['question_category'] == 'science'].copy()
+    post_content = df_post_merged[df_post_merged['question_category'] == 'science'].copy()
+    
+    # Get unique questions
+    all_questions = sorted(set(pre_content['question'].unique()) | set(post_content['question'].unique()))
+    
+    results = []
+    
+    for question in all_questions:
+        # Get pre and post data for this question
+        pre_q = pre_content[pre_content['question'] == question]
+        post_q = post_content[post_content['question'] == question]
+        
+        # Get correct/incorrect arrays
+        pre = are_correct(pre_q, pre=True).values
+        post = are_correct(post_q, pre=False).values
+        
+        pre = np.array(pre)
+        post = np.array(post)
+        
+        pre_n = len(pre)
+        post_n = len(post)
+        
+        if pre_n == 0 or post_n == 0:
+            continue
+        
+        # Calculate proportions
+        pre_correct = pre.sum()
+        post_correct = post.sum()
+        pre_prop = pre_correct / pre_n
+        post_prop = post_correct / post_n
+        
+        # Chi-squared test for independence
+        from scipy.stats import chi2_contingency
+        contingency_table = [
+            [pre_correct, pre_n - pre_correct],
+            [post_correct, post_n - post_correct]
+        ]
+        chi2, p_value, dof, expected = chi2_contingency(contingency_table)
+        
+        fisher_test_result = fisher_test(pre_correct, pre_n, post_correct, post_n)
+        fisher_p = fisher_test_result['p_value']
+        
+        
+        # Calculate Cohen's h effect size
+        h = cohens_h(pre, post)
+        
+        # Calculate standardized difference (unpaired)
+        z = standardized_differance(pre, post)
+        
+        # Format summary sentence
+        change_direction = "improvement" if post_prop > pre_prop else "decline" if post_prop < pre_prop else "no change"
+        significance = "statistically significant" if p_value < 0.05 else "not statistically significant"
+        summary = f"There was a {significance} {change_direction} from pre ({pre_correct}/{pre_n}, {pre_prop:.1%}) to post ({post_correct}/{post_n}, {post_prop:.1%}). Effect size (h) = {h:.2f}, p = {p_value:.3f}."
+        
+        # Store results
+        groups = pre_q['groups'].iloc[0] if len(pre_q) > 0 else post_q['groups'].iloc[0] if len(post_q) > 0 else frozenset()
+        
+        result = pd.Series({
+            'question': question,
+            'percent_correct_pre': f"{pre_prop:.1%}",
+            'percent_correct_post': f"{post_prop:.1%}",
+            'pre_to_post_change_percent': f"{post_prop - pre_prop:.1%}",
+            'summary': summary,
+            'fisher_p_value': np.around(fisher_p, 6),
+            'fisher_odds_ratio': fisher_test_result['odds_ratio'],
+            'cohens_h': h,
+            'standardized_difference': z,
+            'chi2': chi2,
+            'chi2_p_value': np.around(p_value, 6),
+            'pre_correct': pre_correct,
+            'post_correct': post_correct,
+            'pre_n': pre_n,
+            'post_n': post_n,
+            'tag_pre': pre_q['tag_pre'].iloc[0] if len(pre_q) > 0 else None,
+            'tag_post': post_q['tag_post'].iloc[0] if len(post_q) > 0 else None,
+            'group': ", ".join(flatten(groups))
+        })
+        
+        results.append(result)
+    
+    return pd.DataFrame(results)
+
+# Supported via standard GitHub programming aids
+def create_bulk_likert_stats(df_pre_merged, df_post_merged):
+    """
+    Creates bulk statistics comparing pre and post Likert scale responses without requiring matched pairs.
+    
+    Parameters:
+    -----------
+    df_pre_merged: pandas DataFrame
+        Pre-survey data in long format with metadata
+    df_post_merged: pandas DataFrame
+        Post-survey data in long format with metadata
+        
+    Returns:
+    --------
+    pandas DataFrame
+        DataFrame containing comparative statistics for each Likert question
+    """
+    # Filter for Likert questions
+    pre_likert = df_pre_merged[df_pre_merged['question_category'] == 'likert'].copy()
+    post_likert = df_post_merged[df_post_merged['question_category'] == 'likert'].copy()
+    
+    # Get unique questions
+    all_questions = sorted(set(pre_likert['question'].unique()) | set(post_likert['question'].unique()))
+    
+    results = []
+    
+    for question in all_questions:
+        # Get pre and post data for this question
+        pre_q = pre_likert[pre_likert['question'] == question]
+        post_q = post_likert[post_likert['question'] == question]
+        
+        # Handle negatively worded questions
+        if len(pre_q) > 0 and pre_q['likert_negate'].iloc[0]:
+            pre_response = 5 - pre_q['correct']
+        else:
+            pre_response = pre_q['correct']
+            
+        if len(post_q) > 0 and post_q['likert_negate'].iloc[0]:
+            post_response = 5 - post_q['correct']
+        else:
+            post_response = post_q['correct']
+            
+        short_q = pre_q['short_question'].iloc[0] if len(pre_q) > 0 else post_q['short_question'].iloc[0] if len(post_q) > 0 else None,
+        
+        # Convert to numeric and drop NAs
+        pre_response = pd.to_numeric(pre_response, errors='coerce').dropna()
+        post_response = pd.to_numeric(post_response, errors='coerce').dropna()
+        
+        pre_n = len(pre_response)
+        post_n = len(post_response)
+        
+        if pre_n == 0 or post_n == 0:
+            continue
+        
+        # Calculate statistics
+        pre_mean = pre_response.mean()
+        post_mean = post_response.mean()
+        pre_std = pre_response.std()
+        post_std = post_response.std()
+        pre_median = pre_response.median()
+        post_median = post_response.median()
+        
+        # Calculate Cohen's d effect size for independent samples
+        # Using pooled standard deviation formula
+        # pooled_std = np.sqrt(((pre_n - 1) * pre_std**2 + (post_n - 1) * post_std**2) / (pre_n + post_n - 2))
+        pooled_std = np.sqrt(pooled_variance(
+            [pre_std**2, post_std**2], [pre_n, post_n]
+        ))
+        # Cohen's d = (mean_post - mean_pre) / pooled_std
+        cohens_d = (post_mean - pre_mean) / pooled_std if pooled_std > 0 else np.nan
+        
+        
+        # Mann-Whitney U test (non-parametric test for independent samples)
+        from scipy.stats import mannwhitneyu
+        try:
+            u_stat, p_value = mannwhitneyu(post_response, pre_response, alternative='two-sided')
+        except ValueError:
+            u_stat, p_value = np.nan, np.nan
+        
+        # Format summary sentence
+        change_direction = "improvement" if post_mean > pre_mean else "decline" if post_mean < pre_mean else "no change"
+        significance = "statistically significant" if p_value < 0.05 else "not statistically significant"
+        summary = f"There was a {significance} {change_direction} from pre (M={pre_mean:.2f}, SD={pre_std:.2f}, n={pre_n}) to post (M={post_mean:.2f}, SD={post_std:.2f}, n={post_n}). Effect size (d) = {cohens_d:.2f}, p = {p_value:.3f}."
+        
+        # Store results
+        groups = pre_q['groups'].iloc[0] if len(pre_q) > 0 else post_q['groups'].iloc[0] if len(post_q) > 0 else frozenset()
+        negate = pre_q['likert_negate'].iloc[0] if len(pre_q) > 0 else post_q['likert_negate'].iloc[0] if len(post_q) > 0 else None
+        
+        result = pd.Series({
+            'question': question,
+            'short_question': short_q[0],
+            'mean(pre)': np.around(pre_mean, 4),
+            'mean(post)': np.around(post_mean, 4),
+            'mean(Δ)': np.around(post_mean - pre_mean, 4),
+            'median(pre)': np.around(pre_median, 4),
+            'median(post)': np.around(post_median, 4),
+            'std(pre)': np.around(pre_std, 4),
+            'std(post)': np.around(post_std, 4),
+            'cohens_d': np.around(cohens_d, 4),
+            'mann_whitney_u': u_stat,
+            'p_value': np.around(p_value, 6),
+            'pre_n': pre_n,
+            'post_n': post_n,
+            'negate': -1 if negate else 1,
+            'summary': summary,
+            'tag_pre': pre_q['tag_pre'].iloc[0] if len(pre_q) > 0 else None,
+            'tag_post': post_q['tag_post'].iloc[0] if len(post_q) > 0 else None,
+            'group': ", ".join(flatten(groups))
+        })
+        
+        results.append(result)
+    
+    return pd.DataFrame(results)
+
+import os
+from contextlib import contextmanager
+@contextmanager
+def check_if_exists(filename, overwrite=False, error = False):
+    """
+    Context manager to check if a file exists before
+    writing to it.
+    """
+    allow_write = (not os.path.exists(filename)) or overwrite
+    if not allow_write:
+        if error:
+            raise FileExistsError(f"File {filename} already exists. Use overwrite=True to overwrite.")
+        else:
+            print(f"File {filename} already exists. Use overwrite=True to overwrite.")
+        yield None
+    else:
+        yield filename

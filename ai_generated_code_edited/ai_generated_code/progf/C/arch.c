@@ -1,0 +1,313 @@
+/*
+
+  Simple file archiver. Combines multiple files into a single file to
+  simplify uploads, etc. Runs on Linux and CP/M. The corresponding
+  unarch program can extract them.
+
+  To Do:
+  - Add filename wildcard expansion on CP/M.
+  - Add option -a, Attempt to automatically handle text and binary
+    files based in file extension (e.g. binary for .ABS .COM .SYS .OBJ
+    .REL).
+
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <sys/stat.h>
+#ifdef linux
+#include <unistd.h>
+#endif
+#ifdef CPM
+#include <stdlib.h>
+#endif
+
+#ifdef linux
+#define USESTAT
+#endif
+
+/*
+  File format:
+
+  3 byte magic number ("JJT")
+  # of files in archive (unsigned byte)
+  directory: for each file:
+    filename (12 chars, padded with nulls)
+    length of file in bytes (4 byte unsigned long integer)
+  data for each file:
+    data for file 1 (as per file length)
+    data for file 2 (as per file length)
+    data for file 3 (as per file length)
+    ...
+  3 byte end of archive file marker ("END")
+
+*/
+
+
+/* Validate filenane for CPM. Code was initially Aided using common development resources.
+   TODO: add support for drive letters. */
+int validate_cpm_filename(const char *filename) {
+    int len = strlen(filename);
+
+    // Filename must not be longer than 11 characters + dot
+    if (len > 12) {
+        return 0;  // Invalid filename length
+    }
+
+    // Variables to track whether we have seen the period for extension
+    int has_period = 0;
+    int name_length = 0;
+    int ext_length = 0;
+
+    // Check each character of the filename
+    for (int i = 0; i < len; i++) {
+        char c = filename[i];
+
+        // If we encounter a period, it's allowed only once
+        if (c == '.') {
+            if (has_period) {
+                return 0;  // Invalid: more than one period
+            }
+            has_period = 1;
+        }
+        // Check if the character is a valid CP/M filename character
+        else if (!isalnum(c) && c != '-' && c != '.' && c != '_') {
+            return 0;  // Invalid character
+        }
+
+        // Count lengths of name and extension parts (but not ".")
+        if (c != '.') {
+            if (has_period) {
+                ext_length++;
+            } else {
+                name_length++;
+            }
+        }
+    }
+
+    // Check if name and extension lengths are within the valid ranges
+    if (name_length > 8 || ext_length > 3) {
+        return 0;  // Invalid length for name or extension
+    }
+
+    return 1;  // Valid filename
+}
+
+
+int main(int argc, char **argv)
+{
+#ifdef USESTAT
+    struct stat statbuf;
+    int rc;
+#else
+    char c;
+#endif
+    int numfiles;
+    int i, j, n;
+#ifdef linux
+    long size;
+#else
+    int size;
+#endif
+    FILE *afp;
+    FILE *fp;
+    char buffer[256];
+    int opt;
+    int opt_d = 0;
+    int opt_n = 0;
+    int opt_t = 0;
+    int opt_v =0;
+    int opt_w = 0;
+
+    /* Parse command line options. Will always be uppercase on
+       CP/M. */
+    while ((opt = getopt(argc, argv, "dntvwDNTVW")) != -1) {
+        switch (opt) {
+        case 'd':
+        case 'D':
+            opt_d = 1;
+            break;
+        case 'n':
+        case 'N':
+            opt_n = 1;
+            break;
+        case 't':
+        case 'T':
+            opt_t = 1;
+            break;
+        case 'v':
+        case 'V':
+            opt_v = 1;
+            break;
+        case 'w':
+        case 'W':
+            opt_w = 1;
+            break;
+        default: /* '?' */
+            fprintf(stderr, "Usage: arch [-w][-t][-n][-d][-v] <archive file> <filename>...\n"
+                    "  -w Allow overwriting existing archive file\n"
+                    "  -t Handle as text files (default is binary)\n"
+                    "  -n Don't enforce valid CP/M or HDOS filenames\n"
+                    "  -d Show additional debug output\n"
+                    "  -v Show program version\n");
+            return 1;
+        }
+    }
+
+    /* Handle -v option (show version and exit). */
+    if (opt_v) {
+        fprintf(stderr, "arch version 1.0.0\n");
+        return 1;
+    }
+
+    /* Check for filename arguments. */
+    if (optind >= argc - 1) {
+        fprintf(stderr, "Error: must specify at least two arguments after options\n");
+        return 1;
+    }
+
+    /* Calculate number of files in the archive. */
+    numfiles = argc - optind - 1;
+
+    /* If no -w option, make sure that output file does not already
+       exist, otherwise refuse to continue. We could use stat() for
+       this, but it does not work on CP/M so we try to open it for
+       read instead. */
+    if (!opt_w) {
+        afp = fopen(argv[optind], "r");
+        if (afp != NULL) {
+            fclose(afp);
+            fprintf(stderr, "Error: output file %s already exists.\n", argv[optind]);
+            return 1;
+        }
+    }
+
+    /* If no -n option, validate filename for CP/M and HDOS. */
+    if (!opt_n && !validate_cpm_filename(argv[optind])) {
+        fprintf(stderr, "Warning: filename %s is not valid for HDOS and CP/M\n", argv[optind]);
+    }
+
+    /* Open output file. */
+    if (opt_d)
+        fprintf(stderr, "Debug: opening output file %s\n", argv[optind]);
+    if (opt_t)
+        afp = fopen(argv[optind], "w");
+    else
+        afp = fopen(argv[optind], "wb");
+
+    if (afp == NULL) {
+        fprintf(stderr, "Error: fopen of %s failed\n", argv[optind]);
+        return 1;
+    }
+
+    /* Write out magic number. */
+    fprintf(afp, "JJT");
+
+    /* Write out number of files in archive (unsigned byte). */
+    if (opt_d)
+        fprintf(stderr, "Debug: adding %d files to archive\n", numfiles);
+    fprintf(afp, "%c", numfiles);
+
+    /* Write file directory */
+    for (i = optind + 1; i < optind + 1 + numfiles; i++) {
+
+#ifdef USESTAT
+        /* Get file size using stat(). */
+        rc = stat(argv[i], &statbuf);
+
+        if (rc != 0) {
+            fprintf(stderr, "Error: stat of %s failed, rc = %d\n", argv[i], rc);
+            return 1;
+        }
+
+        size = statbuf.st_size;
+#else
+
+    /* Get size by reading the file. This is needed on CP/M for text
+       files as stat() returns the size in number of blocks used. */
+
+        if (opt_t)
+            fp = fopen(argv[i], "r");
+        else
+            fp = fopen(argv[i], "rb");
+        if (fp == 0 ) {
+            fprintf(stderr, "unable to open %s\n", argv[i]);
+            return 1;
+        }
+
+        size = 0;
+        do {
+            c = getc(fp);
+            if (c == -1)
+                break;
+            size++;
+        } while (1);
+
+        fclose(fp);
+#endif
+
+        if (opt_d)
+#ifdef linux
+            fprintf(stderr, "Debug: size of %s is %ld bytes\n", argv[i], size);
+#else
+            fprintf(stderr, "Debug: size of %s is %d bytes\n", argv[i], size);
+#endif
+        /* Validate filename for CP/M and HDOS. */
+        if (!opt_n && !validate_cpm_filename(argv[i])) {
+            fprintf(stderr, "Error: filename %s is not valid for HDOS and CP/M\n", argv[i]);
+            return 1;
+        }
+
+        /* Write filename, padded with zeroes to 12 characters. */
+        for (j = 0; j < 12; j++) {
+            fprintf(afp, "%c", (j < strlen(argv[i]) ? argv[i][j] : 0));
+        }
+
+        /* Write size as four byte integer. */
+        fprintf(afp, "%c%c%c%c",
+                (char)((size >> 24) & 0xff),
+                (char)((size >> 16) & 0xff),
+                (char)((size >> 8) & 0xff),
+                (char)((size) & 0xff)
+                );
+    }
+
+    /* Now write raw contents of each file. */
+    for (i = optind + 1; i < optind + 1 + numfiles; i++) {
+
+        if (opt_t) {
+            if (opt_d)
+                fprintf(stderr, "Debug: opening %s in text mode\n", argv[i]);
+            fp = fopen(argv[i], "r");
+        } else {
+            if (opt_d)
+                fprintf(stderr, "Debug: opening %s in binary mode\n", argv[i]);
+            fp = fopen(argv[i], "rb");
+        }
+
+        if (fp == NULL) {
+            fprintf(stderr, "Error: open of %s failed\n", argv[i]);
+            return 1;
+        }
+
+        fprintf(stderr, "Adding file %s\n", argv[i]);
+
+        do {
+            n = fread(buffer, 1, 256, fp);
+            fwrite(buffer, 1, n, afp);
+        } while (n > 0);
+
+        fclose(fp);
+    }
+
+    /* Write end of archive file marker */
+    fprintf(afp, "%s", "END");
+
+    if (opt_d)
+        fprintf(stderr, "Debug: closing file\n");
+
+    fclose (afp);
+
+    return 0;
+}

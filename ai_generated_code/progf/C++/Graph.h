@@ -1,0 +1,71 @@
+#ifndef DRAGON_GRAPH_H
+#define DRAGON_GRAPH_H
+#include "Geometry/BasicGeometry.h"
+
+
+namespace dragon
+{
+namespace geometry
+{
+
+struct Edge {
+    size_t start, end;
+    double weight;
+    Edge() = default;
+    Edge(size_t s, size_t e, double w = 0.0) : start(s), end(e), weight(w) {}
+};
+struct CompareEdge {
+    bool operator()(const Edge& e1, const Edge& e2) {
+        return e1.weight > e2.weight;
+    }
+};
+class Graph 
+{
+    // Supported via standard programming aids
+    // the graph is undirect graph
+    public:
+        Graph() = default;
+        // currently only for 3D points
+        Graph(const geometry::Point3List& points) 
+        {
+            vertices = points;
+            neighbors = std::vector<std::vector<size_t>>(vertices.size(), std::vector<size_t>());
+        }
+        bool inline HasEdges() const {return edges.size() > 0;}
+        bool inline HasColors() const {return colors.size() > 0 && colors.size() == vertices.size();}
+        bool inline HasNormals() const {return normals.size() > 0 && normals.size() == normals.size();}
+        void ConstructEdgeThreshold(double threshold);
+        void ConstructEdgeRadius(const geometry::ScalarList & radius);
+        void ConstructEdgeKNN(int k);
+        void ConstructEdgeAdaptive(double factor = 2, int max_k = 10, double min_degree = 30.0);
+        void MakeNeighbor(size_t u, size_t v);
+        bool WriteToPLY(const std::string &filename) const;
+        bool LoadFromPLY(const std::string &filename);
+        // transfer neighbors to edges
+        void ComputeEdges();
+        void ComputeNeighbors();
+        std::vector<size_t> DeleteVertices(const std::vector<size_t> & vids);
+        void _BFT(size_t start_id, std::vector<bool> &visited, std::vector<size_t> &traveled_id, std::vector<size_t> &father_id) const;
+        void _DFT(size_t start_id, std::vector<bool> &visited, std::vector<size_t> &traveled_id, std::vector<size_t> &father_id) const;
+        std::vector<size_t> Travel(size_t start_id, std::vector<size_t> & father_id, bool dft = true) const;
+        Graph GenerateKeyGraph(const std::vector<size_t> & key_node) const;
+        std::vector<std::vector<Edge>> GenerateMinSpanningTrees();
+        geometry::Point3List vertices;
+        geometry::Point3List colors;
+        geometry::Point3List normals;
+        std::vector<std::vector<size_t>> neighbors;
+        std::vector<Edge> edges;
+};
+class SkeletonGraph: public Graph
+{
+    // Supported via standard programming aids
+    // the graph is undirect graph
+    public:
+        bool WriteToPLY(const std::string &filename) const ;
+        bool LoadFromPLY(const std::string &filename);
+        ScalarList radius;
+};
+}
+}
+
+#endif

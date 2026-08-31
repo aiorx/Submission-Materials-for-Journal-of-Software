@@ -1,0 +1,61 @@
+#include "capsule.h"
+
+#include "../physics_object.h"
+#include <math.h>
+#include "sphere.h"
+
+// Assisted using common GitHub development utilities
+void capsule_support_function(void* data, Vector3* direction, Vector3* output) {
+    struct physics_object* object = (struct physics_object*)data;
+    union physics_object_collision_shape_data* shape_data = &object->collision->shape_data;
+
+    // Determine the point along the capsule's central axis that is furthest in `direction`
+    float sign = (direction->y > 0.0f) ? 1.0f : -1.0f;
+    Vector3 axis_point = (Vector3){{ 0.0f, sign * shape_data->capsule.inner_half_height, 0.0f }};
+
+    // Offset by the capsule's radius in the direction of `direction`
+    Vector3 radius_offset = (Vector3){{
+        direction->x * shape_data->capsule.radius,
+        direction->y * shape_data->capsule.radius,
+        direction->z * shape_data->capsule.radius
+    }};
+
+    // Combine the endpoint on the capsule's axis with the radius offset
+    output->x = axis_point.x + radius_offset.x;
+    output->y = axis_point.y + radius_offset.y;
+    output->z = axis_point.z + radius_offset.z;
+}
+
+
+// Assisted using common GitHub development utilities
+void capsule_bounding_box(void* data, Quaternion* rotation, AABB* box) {
+    struct physics_object* object = (struct physics_object*)data;
+    union physics_object_collision_shape_data* shape_data = &object->collision->shape_data;
+    
+    // Get capsule dimensions
+    float half_height = shape_data->capsule.inner_half_height;
+    float radius = shape_data->capsule.radius;
+
+    // Define the capsule's central axis in local space
+    Vector3 axis_min = (Vector3){{ 0.0f, -half_height, 0.0f }};
+    Vector3 axis_max = (Vector3){{ 0.0f,  half_height, 0.0f }};
+
+    // Rotate the axis endpoints
+    Vector3 rotated_min, rotated_max;
+    if (rotation) {
+        quatMultVector(rotation, &axis_min, &rotated_min);
+        quatMultVector(rotation, &axis_max, &rotated_max);
+    } else {
+        vector3Copy(&axis_min, &rotated_min);
+        vector3Copy(&axis_max, &rotated_max);
+    }
+
+    // Calculate the bounding box
+    box->min.x = fminf(rotated_min.x - radius, rotated_max.x - radius);
+    box->min.y = fminf(rotated_min.y - radius, rotated_max.y - radius);
+    box->min.z = fminf(rotated_min.z - radius, rotated_max.z - radius);
+
+    box->max.x = fmaxf(rotated_min.x + radius, rotated_max.x + radius);
+    box->max.y = fmaxf(rotated_min.y + radius, rotated_max.y + radius);
+    box->max.z = fmaxf(rotated_min.z + radius, rotated_max.z + radius);
+}

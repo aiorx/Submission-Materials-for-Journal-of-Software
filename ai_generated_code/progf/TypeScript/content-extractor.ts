@@ -1,0 +1,97 @@
+// Assisted using common GitHub development utilities
+// Content Extractor - Extension-specific wrapper around shared core logic
+// Uses ContentExtractionCore for consistent extraction logic across contexts
+
+import { IDocumentMetadata } from '../types/types.js';
+import {
+  ContentExtractionCore,
+  ICoreContentResult,
+  ICoreExtractionOptions,
+  IImageInfo,
+  IPageStructure,
+} from './content-extraction-core.js';
+import { createLogger } from './logger.js';
+
+export interface IContentResult extends ICoreContentResult {
+  // Extension-specific additions can go here if needed
+}
+
+export interface IExtractorOptions extends ICoreExtractionOptions {
+  // Extension-specific options can be added here if needed
+}
+
+// Re-export core interfaces for compatibility
+export { IImageInfo, IPageStructure };
+
+/**
+ * Content extractor with extension-specific functionality
+ * Uses shared ContentExtractionCore for consistent logic
+ */
+export class ContentExtractor {
+  private readonly logger = createLogger('ContentExtractor');
+  private readonly core = new ContentExtractionCore();
+
+  /**
+   * Extract content from the current page
+   */
+  async extractContent(options: IExtractorOptions = {}): Promise<IContentResult> {
+    try {
+      this.logger.debug('Starting content extraction');
+
+      // Use shared core for extraction
+      const result = await this.core.extractContent(options);
+
+      this.logger.debug('Content extraction completed', {
+        wordCount: result.wordCount,
+        readingTime: result.readingTime,
+      });
+
+      return result;
+    } catch (error) {
+      this.logger.error('Content extraction failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Extract page metadata with enhanced blog support
+   */
+  extractMetadata(): IDocumentMetadata {
+    return this.core.extractMetadata();
+  }
+
+  /**
+   * Extract images from the page
+   */
+  extractImages(): IImageInfo[] {
+    return this.core.extractImages();
+  }
+
+  /**
+   * Get page structure information
+   */
+  getPageStructure(): IPageStructure {
+    return this.core.getPageStructure();
+  }
+
+  /**
+   * Calculate content quality score
+   */
+  getContentQualityScore(): number {
+    return this.core.getContentQualityScore();
+  }
+
+  /**
+   * Check if paywall is present
+   */
+  isPaywallPresent(): boolean {
+    return this.core.isPaywallPresent();
+  }
+
+  /**
+   * Extract advanced metadata including structured data
+   */
+  extractAdvancedMetadata(): Record<string, unknown> {
+    return this.core.extractAdvancedMetadata();
+  }
+}

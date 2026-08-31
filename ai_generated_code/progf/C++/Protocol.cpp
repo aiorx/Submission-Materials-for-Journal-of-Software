@@ -1,0 +1,70 @@
+#include <cstring>
+#include <endian.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+
+#include "Protocol.hpp"
+#include <iostream>
+
+namespace Protocol {
+
+    bool CommandHeader::parse(const std::vector<char>& buffer, CommandHeader& out) {
+        if (buffer.size() < COMMAND_HEADER_SIZE) return false;
+        out.command_id = static_cast<CommandID>(static_cast<uint8_t>(buffer[0]));
+        std::memcpy(out.reserved, &buffer[1], 3);
+        return true;
+    }
+
+    bool FileHeader::parse(const std::vector<char>& buffer, size_t offset, FileHeader& out, size_t& out_next_offset) {
+        if (buffer.size() < offset + 4) return false;
+
+        out.permissions = parse_uint16(&buffer[offset]);
+        uint16_t path_len = parse_uint16(&buffer[offset + 2]);
+
+        size_t needed = offset + 2 + 2 + path_len + 8; // perms(2) + path_len(2) + path(path_len) + file_size(8)
+        if (buffer.size() < needed) return false;
+
+        out.path = std::string(&buffer[offset + 4], path_len);
+        out.file_size = parse_uint64(&buffer[offset + 4 + path_len]);
+
+        out_next_offset = needed;
+        return true;
+    }
+
+    // Refactored by GPT4
+    void sendReply(int socket_fd, ReplyStatus status) {
+        uint8_t value = static_cast<uint8_t>(status);
+        send(socket_fd, &value, sizeof(value), 0);  // 1-byte reply
+    }
+
+    // Written with routine coding tools4
+    // Parse a 2-byte little-endian uint from buffer
+    uint16_t parse_uint16(const char* data) {
+        uint16_t raw;                           // Declare storage for our 2-byte uint
+        std::memcpy(&raw, data, sizeof(raw));   // Copy 2 bytes to from data to raw
+        return le16toh(raw);                    // Convert LE value in raw to host's native byte order
+    }
+
+    // Written with routine coding tools4
+    // Parse an 8-byte little-endian uint from buffer
+    uint64_t parse_uint64(const char* data) {
+        uint64_t raw;                           // Declare storage for our 8-byte uint
+        std::memcpy(&raw, data, sizeof(raw));   // Copy 8 bytes from data to raw
+        return le64toh(raw);                    // Convert LE value in raw to host's native byte order
+    }
+
+    // Written with routine coding tools4
+    // Write a 2-byte little-endian uint to buffer
+    void write_uint16(char* dest, uint16_t value) {
+        uint16_t le_value = htole16(value);             // Converts given 2-byte uint to LE format
+        std::memcpy(dest, &le_value, sizeof(le_value)); // Copy 2 bytes from le_value to dest
+    }
+
+    // Written with routine coding tools4
+    // Write an 8-byte little-endian uint to buffer
+    void write_uint64(char* dest, uint64_t value) {
+        uint64_t le_value = htole64(value);             // Converts given 8-byte uint to LE format
+        std::memcpy(dest, &le_value, sizeof(le_value)); //Copy 8 bytes from le_value to dest
+    }
+
+} // namespace Protocol

@@ -1,0 +1,241 @@
+from bisect import bisect_left
+
+"""
+This code sample Aided using common development resources
+"""
+class BPlusTreeNode:
+    def __init__(self, is_leaf=False):
+        self.is_leaf = is_leaf
+        self.parent = None
+        self.keys = []
+        self.values = []
+        self.children = []
+        self.next_leaf = None
+
+    def is_full(self):
+        return len(self.keys) == self.order
+
+    @property
+    def order(self):
+        # Here, we're using a fixed order of 4 for the tree.
+        return 4
+
+    def add_key_value(self, key, value):
+        self.keys.append(key)
+        self.values.append(value)
+        self.keys, self.values = (list(t) for t in zip(*sorted(zip(self.keys, self.values))))
+
+    def add_child(self, node):
+        node.parent = self
+        self.children.append(node)
+        self.children = sorted(self.children, key=lambda x: x.keys[0])
+
+    def is_root(self):
+        return self.parent is None
+
+    def split(self):
+        center = len(self.keys) // 2
+        sibling = BPlusTreeNode(self.is_leaf)
+
+        sibling.keys = self.keys[center:]
+        sibling.values = self.values[center:]
+        sibling.children = self.children[center:]
+
+        self.keys = self.keys[:center]
+        self.values = self.values[:center]
+        self.children = self.children[:center]
+
+        return sibling
+
+    def merge(self, sibling):
+        self.keys += sibling.keys
+        self.values += sibling.values
+        self.children += sibling.children
+
+        if not sibling.is_leaf:
+            for child in sibling.children:
+                child.parent = self
+
+        self.children = sorted(self.children, key=lambda x: x.keys[0])
+
+    def get_next_leaf(self):
+        return self.next_leaf
+
+class BPlusTree:
+    def __init__(self):
+        self.root = None
+
+    def search(self, key):
+        node = self.root
+        while node is not None:
+            i = bisect_left(node.keys, key)
+            if i != len(node.keys) and node.keys[i] == key:
+                return node.values[i]
+            elif node.is_leaf:
+                return None
+            else:
+                node = node.children[i]
+
+    def insert(self, key, value):
+        if self.root is None:
+            self.root = BPlusTreeNode(is_leaf=True)
+            self.root.add_key_value(key, value)
+            return
+
+        node = self.root
+        while not node.is_leaf:
+            i = bisect_left(node.keys, key)
+            node = node.children[i]
+
+        node.add_key_value(key, value)
+
+        while node.is_full():
+            sibling = node.split()
+            if node.is_root():
+                self.root = BPlusTreeNode()
+                self.root.add_child(node)
+                node.parent = self.root
+
+            node = node.parent
+            node.add_key_value(sibling.keys[0], None)
+            node.add_child(sibling)
+
+            if node.is_full():
+                node, sibling = node.split()
+                if node.is_root():
+                    self.root = BPlusTreeNode()
+                    self.root.add_child(node)
+                    node.parent = self.root
+                sibling.parent = node.parent
+                node.parent.add_key_value(sibling.keys[0], None)
+                node.parent.add_child(sibling)
+                node = node.parent
+
+        # Handle the case where we split the root
+        while node.is_root() and len(node.children) == 2:
+            self.root = node.children[0]
+            self.root.parent = None
+            node = self.root
+
+        # Handle the case where we insert into a leaf that is not full
+        if not node.is_full():
+            return
+
+        sibling = node.split()
+        node = node.parent
+        node.add_key_value(sibling.keys[0], None)
+        node.add_child(sibling)
+
+        if node.is_full():
+            node, sibling = node.split()
+            if node.is_root():
+                self.root = BPlusTreeNode()
+                self.root.add_child(node)
+                node.parent = self.root
+            sibling.parent = node.parent
+            node.parent.add_key_value(sibling.keys[0], None)
+            node.parent.add_child(sibling)
+
+    def delete(self, key):
+        if self.root is None:
+            return
+
+        node = self.root
+        while not node.is_leaf:
+            i = bisect_left(node.keys, key)
+            node = node.children[i]
+
+        i = bisect_left(node.keys, key)
+        if i == len(node.keys) or node.keys[i] != key:
+            return
+
+        del node.keys[i]
+        del node.values[i]
+
+        while node != self.root and len(node.keys) < (node.order // 2):
+            parent = node.parent
+            index = parent.children.index(node)
+
+            if index == 0:
+                sibling = parent.children[index+1]
+                if len(sibling.keys) > (sibling.order // 2):
+                    node.keys.append(parent.keys[index])
+                    node.values.append(sibling.values.pop(0))
+                    parent.keys[index] = sibling.keys.pop(0)
+                    if not node.is_leaf:
+                        node.children.append(sibling.children.pop(0))
+                        node.children[-1].parent = node
+                else:
+                    node.merge(sibling)
+                    del parent.keys[index]
+                    parent.children.remove(sibling)
+
+            else:
+                sibling = parent.children[index-1]
+                if len(sibling.keys) > (sibling.order // 2):
+                    node.keys.insert(0, parent.keys[index-1])
+                    node.values.insert(0, sibling.values.pop())
+                    parent.keys[index-1] = sibling.keys.pop()
+                    if not node.is_leaf:
+                        node.children.insert(0, sibling.children.pop())
+                        node.children[0].parent = node
+                else:
+                    sibling.merge(node)
+                    del parent.keys[index-1]
+                    parent.children.remove(node)
+                    node = sibling
+
+        if len(self.root.keys) == 0 and len(self.root.children) > 0:
+            self.root = self.root.children[0]
+            self.root.parent = None
+
+def print_bplus_tree(node, depth=0):
+    if node is None:
+        return
+    prefix = '\t' * depth
+    if node.is_leaf:
+        print(f'{prefix}LEAF: {node}')
+    else:
+        print(f'{prefix}INTERNAL: {node}')
+    for i, key in enumerate(node.keys):
+        if not node.is_leaf:
+            print(f'{prefix}Key: {key}')
+            print_bplus_tree(node.children[i], depth + 1)
+        else:
+            print(f'{prefix}Value: {node.values[i]}')
+    if not node.is_leaf:
+        print_bplus_tree(node.children[-1], depth + 1)
+
+
+
+
+
+if __name__ == "__main__":
+    # create a new B+ tree
+    tree = BPlusTree()
+
+    # insert some values into the tree
+    tree.insert(10, "value1")
+    tree.insert(20, "value2")
+    tree.insert(30, "value3")
+    tree.insert(40, "value4")
+    # tree.insert(50, "value5")
+    # tree.insert(60, "value6")
+    # tree.insert(70, "value7")
+    # tree.insert(80, "value8")
+    # tree.insert(90, "value9")
+
+    # print out the tree
+    print("After insertions:")
+    print_bplus_tree(tree)
+
+    # # delete some values from the tree
+    # tree.delete(50)
+    # tree.delete(60)
+    # tree.delete(70)
+
+    # # print out the tree again
+    # print("After deletions:")
+    # tree.print_tree()
+
+

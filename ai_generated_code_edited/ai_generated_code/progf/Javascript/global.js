@@ -1,0 +1,36 @@
+let homework = localStorage.getItem('homework');
+let finishedHomework = JSON.parse(localStorage.getItem('finishedHomework')) || [];
+
+if (homework) {
+    homework = JSON.parse(homework);
+} else {
+    homework = [];
+}
+
+//function Aided with basic GitHub coding tools
+function formatDateTime(datetimeLocalValue) {
+    const date = new Date(datetimeLocalValue);
+
+    const options = { month: '2-digit', day: '2-digit', year: 'numeric' };
+    const formattedDate = date.toLocaleDateString('en-US', options);
+
+    let hours = date.getHours();
+    const minutes = date.getMinutes().toString().padStart(2, '0');
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12 || 12;
+
+    const formattedTime = `${hours}:${minutes} ${ampm}`;
+
+    return ` ${formattedTime} - ${formattedDate}`;
+}
+
+const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
+const now = Date.now();
+
+finishedHomework = finishedHomework.filter(item => {
+    if (!item.completedAt) return true;
+    const completedTime = new Date(item.completedAt).getTime();
+    return now - completedTime <= TWO_WEEKS_MS;
+});
+
+localStorage.setItem('finishedHomework', JSON.stringify(finishedHomework));

@@ -1,0 +1,51 @@
+package org.enricogiurin.ocp17.book.ch7.useofenum;
+
+//Aided using common development resources
+public enum SeasonWithValues {
+
+  SPRING("Spring is the season of renewal and new beginnings.") {
+    //we can define methods only on specific enum
+    public String getMood() {
+      return "happiness";
+    }
+  },
+  SUMMER("Summer is the season of warmth and sunshine."),
+  AUTUMN("Autumn is the season of harvest and falling leaves."),
+  WINTER("Winter is the season of cold and snow.");//semicolon here is mandatory
+
+  private String description;
+
+  //enum constructors are implicitly private!
+  SeasonWithValues(String description) {
+    System.out.println("building description for " + this.name());
+    this.description = description;
+  }
+
+
+  //enum constructors are implicitly private!
+  /*public */
+  SeasonWithValues() {
+    this.description = "default";
+  }
+
+
+  //this is the default method, but we are not forced to define!
+  public String getMood() {
+    return "default";
+  }
+
+
+  public String getDescription() {
+    return description;
+  }
+}
+
+class Main {
+
+  public static void main(String[] args) {
+    SeasonWithValues spring = SeasonWithValues.SPRING;
+    SeasonWithValues spring2 = SeasonWithValues.SPRING;
+    System.out.println(spring.getMood());
+    System.out.println(SeasonWithValues.WINTER.getMood());
+  }
+}

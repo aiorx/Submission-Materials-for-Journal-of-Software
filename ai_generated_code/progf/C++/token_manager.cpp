@@ -1,0 +1,147 @@
+#include "token_manager.h"
+#include "google_api_key.h"
+#include "utils/base64.h"
+
+#include <ArduinoJson.h>
+
+const char GOOGLE_TOKEN_HOST[] = "www.googleapis.com";
+
+TaskHandle_t token_task_handle;
+
+token_manager::token_manager()
+{
+  m_ntp_client.begin();
+  m_client.setInsecure();
+}
+
+void token_manager::start()
+{
+  xTaskCreatePinnedToCore(
+    [](void* p)
+    {
+      token_manager* tm = (token_manager*)p;
+
+      while (true)
+      {
+        if (tm->token_expired())
+          tm->get_new_token();
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+      }
+    }, "AI task", 8192, this, 1, &token_task_handle, 1
+  );
+}
+
+const std::string& token_manager::get_token()
+{
+  while (token_expired())
+    vTaskDelay(100);
+
+  return m_token;
+}
+
+void token_manager::get_new_token()
+{
+  m_token.clear();
+
+  const auto request = prepare_token_request();
+
+  m_client.stop();
+  if (auto ret = m_client.connect(GOOGLE_TOKEN_HOST, 443); ret == 0)
+  {
+    Serial.printf("Unable to connect to %s: %d\n", GOOGLE_TOKEN_HOST, ret);
+    return;
+  }
+
+  const auto sent_bytes = m_client.println(request.c_str());
+  const auto json_response = extract_json(std::string{m_client.readString().c_str()});
+
+  StaticJsonDocument<2048> doc;
+  deserializeJson(doc, json_response);
+  const String token = doc["access_token"];
+  m_token = std::string{token.c_str()};
+  m_token_creation_time = m_ntp_client.getEpochTime();
+  m_client.stop();
+}
+
+bool token_manager::token_expired()
+{
+  return m_ntp_client.getEpochTime() - TOKEN_LIFETIME >= m_token_creation_time;
+}
+
+std::string token_manager::prepare_token_request()
+{
+  const std::string payload = "{\"grant_type\":\"urn:ietf:params:oauth:grant-type:jwt-bearer\",\"assertion\":\"" + get_jwt() + "\"}";
+  const std::string request =
+    "POST /token HTTP/1.1\r\n"
+    "Host: oauth2.googleapis.com\r\n"
+    "User-Agent: ESP\r\n"
+    "Content-Length: " + std::to_string(payload.length()) + "\r\n"
+    "Content-Type: application/json\r\n\r\n";
+
+  return request + payload;
+}
+
+std::string token_manager::get_jwt()
+{
+  const std::string header_base64 = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9";
+
+  m_ntp_client.update();
+  const auto cur_tm = m_ntp_client.getEpochTime();
+  const auto exp_tm = cur_tm + TOKEN_LIFETIME;
+  const auto cur_tm_str = std::to_string(cur_tm);
+  const auto exp_tm_str = std::to_string(exp_tm);
+
+  const std::string payload{
+    "{"
+      "\"iss\":\"speech@komputer-385115.iam.gserviceaccount.com\","
+      "\"sub\":\"speech@komputer-385115.iam.gserviceaccount.com\","
+      "\"aud\":\"https://oauth2.googleapis.com/token\","
+      "\"iat\":" + cur_tm_str + ","
+      "\"exp\":" + exp_tm_str + ","
+      "\"scope\":\"https://www.googleapis.com/auth/cloud-platform\""
+    "}"
+  };
+  auto jwt = header_base64 + "." + base64_encode((uint8_t*)payload.data(), payload.length());
+
+  std::array<uint8_t, SHA256_HASH_LEN> hash;
+  mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), (const unsigned char *) jwt.c_str(), jwt.length(), hash.data());
+
+  auto pk_ctx = std::make_unique<mbedtls_pk_context>();
+  mbedtls_pk_init(pk_ctx.get());
+  mbedtls_pk_parse_key(pk_ctx.get(), (const unsigned char *) PRIVATE_KEY, strlen(PRIVATE_KEY) + 1, nullptr, 0);
+
+  auto entropy_ctx = std::make_unique<mbedtls_entropy_context>();
+  auto ctr_drbg_ctx = std::make_unique<mbedtls_ctr_drbg_context>();
+
+  mbedtls_entropy_init(entropy_ctx.get());
+  mbedtls_ctr_drbg_init(ctr_drbg_ctx.get());
+  mbedtls_ctr_drbg_seed(ctr_drbg_ctx.get(), mbedtls_entropy_func, entropy_ctx.get(), NULL, 0);
+
+  std::array<uint8_t, SIGNATURE_LEN> signature;
+  size_t signature_len = 0;
+  mbedtls_pk_sign(pk_ctx.get(), MBEDTLS_MD_SHA256, (const unsigned char *)hash.data(), SHA256_HASH_LEN, signature.data(), &signature_len, mbedtls_ctr_drbg_random, ctr_drbg_ctx.get());
+
+  const auto signature_base64 = base64_encode(signature.data(), signature.size());
+
+  jwt += "." + signature_base64;
+
+  mbedtls_pk_free(pk_ctx.get());
+  mbedtls_entropy_free(entropy_ctx.get());
+  mbedtls_ctr_drbg_free(ctr_drbg_ctx.get());
+
+  return jwt;
+}
+
+// code Assisted with basic coding tools
+std::string token_manager::extract_json(const std::string& input)
+{
+  std::string result;
+  const size_t start_pos = input.find('{');
+  const size_t end_pos = input.find('}');
+
+  if (start_pos != std::string::npos && end_pos != std::string::npos && end_pos > start_pos)
+    result = input.substr(start_pos, end_pos - start_pos + 1);
+
+  return result;
+}

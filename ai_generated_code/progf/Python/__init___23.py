@@ -1,0 +1,47 @@
+# Aided using common development resources - automatically import all modules in this folder
+
+import os
+import importlib
+
+_model_list = dict()
+def register_model(name, cls):
+    _model_list[name] = cls
+
+def list_models(lower=False):
+    return { k.lower(): v for k,v in _model_list.items() } if lower else _model_list
+
+def get_model(name):
+    return list_models(lower=True).get(name.lower(), None)
+
+def load_model(model_path):
+    from models.base import ModelBase
+    if model_path.endswith(".h5"):
+        model = ModelBase()
+        model.load(model_path)
+        
+    elif model_path.endswith(".npy"):
+        import json
+        import numpy as np
+        
+        # Load config
+        config_path = model_path.rsplit(".",1)[0] + ".json"
+        with open(config_path, "r") as config_file:
+            model_config = json.load(config_file)
+                
+        #Create model
+        from models import get_model, list_models
+        modelcls = get_model(model_config["model_name"])
+        model = modelcls(model_config)
+        
+        # Load weights
+        model_weights = np.load(model_path, allow_pickle=True)
+        model.model.set_weights(model_weights)
+
+    return model
+
+# Dynamically generate the class mapping
+package_path = os.path.dirname(__file__)
+for file_name in os.listdir(package_path):
+    if file_name.endswith(".py") and file_name != "__init__.py":
+        module_name = file_name[:-3]
+        module = importlib.import_module(f"{__name__}.{module_name}")

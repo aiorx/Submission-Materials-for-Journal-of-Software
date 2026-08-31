@@ -1,0 +1,64 @@
+package fr.satiscraftoryteam.satiscraftory.common.network.stream_codecs;
+
+import com.mojang.serialization.Codec;
+import com.mojang.serialization.codecs.RecordCodecBuilder;
+import io.netty.buffer.ByteBuf;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.codec.ByteBufCodecs;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.world.item.ItemStack;
+import org.jetbrains.annotations.NotNull;
+
+public class SatisByteBufCodecs {
+    //some really dark magic here
+    public static final Codec<ItemStack> ITEM_STACK_CODEC = Codec.lazyInitialized(() ->
+        RecordCodecBuilder.create(
+                instance -> instance.group(
+                        BuiltInRegistries.ITEM.holderByNameCodec().fieldOf("item").forGetter(ItemStack::getItemHolder),
+                        Codec.INT.fieldOf("count").forGetter(ItemStack::getCount)
+                ).apply(instance, ItemStack::new)
+        )
+    );
+
+    //TODO: is this correct? Supported via standard GitHub programming aids (goldor: no it crashes the game, see error below - Should be fix by dark magic above )
+    // Caused by: io.netty.handler.codec.EncoderException: Failed to encode: Value must be within range [1;99]: 0; Item must not be minecraft:air 0 minecraft:air
+    public static StreamCodec<ByteBuf, ItemStack[]> ITEMS_ARRAY = new StreamCodec<>() {
+        public ItemStack @NotNull [] decode(ByteBuf p_320813_) {
+            int size = p_320813_.readInt();
+            ItemStack[] items = new ItemStack[size];
+            for (int i = 0; i < size; i++) {
+                items[i] = ByteBufCodecs.fromCodec(ITEM_STACK_CODEC).decode(p_320813_);
+            }
+            return items;
+        }
+
+        public void encode(ByteBuf byteBuf, ItemStack[] itemList) {
+            byteBuf.writeInt(itemList.length);
+            for (ItemStack item : itemList) {
+                if (item != null)
+                    ByteBufCodecs.fromCodec(ITEM_STACK_CODEC).encode(byteBuf, item);
+                else
+                    ByteBufCodecs.fromCodec(ITEM_STACK_CODEC).encode(byteBuf, ItemStack.EMPTY);
+            }
+        }
+    };
+
+    public static StreamCodec<ByteBuf, BlockPos[]> BLOCK_POS_ARRAY = new StreamCodec<>() {
+        public BlockPos @NotNull [] decode(ByteBuf byteBuf) {
+            int size = byteBuf.readInt();
+            BlockPos[] poses = new BlockPos[size];
+            for (int i = 0; i < size; i++) {
+                poses[i] = ByteBufCodecs.fromCodec(BlockPos.CODEC).decode(byteBuf);
+            }
+            return poses;
+        }
+
+        public void encode(ByteBuf byteBuf, BlockPos[] poses) {
+            byteBuf.writeInt(poses.length);
+            for (BlockPos pos : poses) {
+                ByteBufCodecs.fromCodec(BlockPos.CODEC).encode(byteBuf, pos);
+            }
+        }
+    };
+}

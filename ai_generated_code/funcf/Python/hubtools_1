@@ -1,0 +1,30 @@
+```python
+def parseTrackLine(s):
+    " Use shlex to split the string respecting quotes, Composed with basic coding tools "
+    lexer = shlex.shlex(s, posix=True)
+    lexer.whitespace_split = True
+    lexer.wordchars += '='  # Allow '=' as part of words
+
+    tokens = list(lexer)
+
+    # Convert the tokens into a dictionary
+    it = iter(tokens)
+    result = {}
+    for token in it:
+        if '=' in token:
+            key, value = token.split('=', 1)
+            result[key] = value.strip('"')  # Remove surrounding quotes if present
+        else:
+            result[token] = next(it).strip('"')  # Handle cases like name="...".
+
+    return result
+
+def stripFirstLine(inputFilename, outputFilename):
+    " Composed with basic coding tools: copies all lines to output, except the first line "
+    with open(inputFilename, 'r') as infile, open(outputFilename, 'w') as outfile:
+        # Skip the first line
+        next(infile)
+        # Write the rest of the lines to the output file
+        for line in infile:
+            outfile.write(line)
+```

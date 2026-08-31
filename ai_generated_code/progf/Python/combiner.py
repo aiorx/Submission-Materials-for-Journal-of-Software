@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+An utility for combining various text files line by line. Useful for combining symbols (*.sym) files.
+
+Python: 3.10+
+License: MIT
+Authors: EXL, MotoFan.Ru, GitHub Copilot (ChatGPT 4o)
+Date: 27-Feb-2025
+Version: 1.0
+
+Usage:
+	./combiner.py -o C390.sym -i C390_8.sym C390_16.sym C390_32.sym
+"""
+
+import argparse
+
+
+def extract_func_name(sym_str: str) -> str:
+	return sym_str.split()[-1]
+
+
+# Produced with advanced coding tools.1 in GitHub Copilot: https://github.com/copilot/
+def arrange_arrays(file_contents):
+	# Step 1: Build master order based on first appearance.
+	master_order = []
+	seen = set()
+	for file_content in file_contents:
+		for sym_str in file_content:
+			name = extract_func_name(sym_str)
+			if name not in seen:
+				master_order.append(name)
+				seen.add(name)
+	# Step 2: Build aligned arrays by master order.
+	aligned_arrays = []
+	for file_content in file_contents:
+		sym_map = {extract_func_name(s): s for s in file_content}
+		aligned = []
+		for name in master_order:
+			if name in sym_map:
+				aligned.append(sym_map[name])
+			else:
+				aligned.append(f"# NOT_FOUND: T {name}")
+		aligned_arrays.append(aligned)
+	# Step 3: Sort all arrays by extract_func_name key, skipping the first line (ADS SYM header).
+	for idx, arr in enumerate(aligned_arrays):
+		if len(arr) > 1:
+			header = arr[0]
+			body = arr[1:]
+			body_sorted = sorted(body, key=lambda s: extract_func_name(s).lower())
+			aligned_arrays[idx] = [header] + body_sorted
+	return aligned_arrays
+
+
+def read_files(file_paths):
+	file_contents = []
+	for file_path in file_paths:
+		with open(file_path, 'r') as f:
+			file_contents.append(f.readlines())
+	return file_contents
+
+
+def combine_files(file_contents):
+	combined_lines = []
+	max_lines = max(len(contents) for contents in file_contents)
+
+	for i in range(max_lines):
+		lines_at_i = [contents[i].strip() if i < len(contents) else '' for contents in file_contents]
+		if all(line == lines_at_i[0] for line in lines_at_i):
+			combined_lines.append(lines_at_i[0])
+		else:
+			addresses = [line for line in lines_at_i if not line.startswith('# NOT_FOUND:')]
+			if addresses:
+				if all(addr.split()[0] == addresses[0].split()[0] for addr in addresses):
+					print(f'OK   : {addresses}')
+				else:
+					print(f'FAIL : {addresses}')
+				combined_lines.append(addresses[0])
+
+	return combined_lines
+
+
+def write_output(output_path, combined_lines):
+	with open(output_path, 'w') as f:
+		for line in combined_lines:
+			f.write(line + '\n')
+
+
+def main():
+	parser = argparse.ArgumentParser(description='Concatenate text files line by line.')
+	parser.add_argument('-o', '--output', required=True, help='Output file path')
+	parser.add_argument('-i', '--input', required=True, nargs='+', help='Input file paths')
+
+	args = parser.parse_args()
+
+	file_contents = read_files(args.input)
+	arranged_arrays = arrange_arrays(file_contents)
+	combined_lines = combine_files(arranged_arrays)
+	write_output(args.output, combined_lines)
+
+if __name__ == '__main__':
+	main()

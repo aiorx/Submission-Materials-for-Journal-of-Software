@@ -1,0 +1,200 @@
+#include "datatypes.h"
+#include "sys/log.h"
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#define LOG_MODULE "Database"
+#define LOG_LEVEL LOG_LEVEL_DBG
+
+
+// Easy name generator Aided using common development resources
+const char* adjectives[] = {
+    "Amazing", "Brilliant", "Creative", "Dazzling", "Durable", "Efficient", "Flexible", "Gorgeous", 
+    "Impressive", "Innovative", "Luxurious", "Practical", "Reliable", "Sleek", "Versatile", "Advanced", 
+    "Bold", "Charming", "Compact", "Delightful", "Dynamic", "Elegant", "Fabulous", "Graceful", "Handy", 
+    "Incredible", "Jazzy", "Keen", "Lively", "Majestic", "Nifty", "Optimized", "Polished", "Quick", 
+    "Radiant", "Savvy", "Tidy", "Unique", "Vivid", "Wholesome", "Youthful", "Zealous", "Affordable", 
+    "Breathtaking", "Convenient", "Dependable", "Energetic", "Friendly", "Geometric", "Harmonious", 
+    "Invincible", "Joyful", "Kinetic", "Lightweight", "Magnetic", "Noble", "Organic", "Precise", "Quirky", 
+    "Remarkable", "Sturdy", "Trustworthy", "Ultra-modern", "Vigorous", "Wonderful", "Zesty", "Artistic", 
+    "Brisk", "Clever", "Delicate", "Evolving", "Flawless", "Glowing", "Hyper", "Inspiring", "Jubilant", 
+    "Knowledgeable", "Luminous", "Modern", "Neat", "Outstanding", "Powerful", "Quick-witted", "Refined", 
+    "Sleek", "Tough", "Ultimate", "Vibrant", "Winning", "Zippy", "Adventurous", "Balanced", "Courageous", 
+    "Dapper", "Eco-friendly", "Fresh", "Glorious", "Hardy", "Intuitive", "Jazzy", "Keen-eyed"
+};
+const char* products[] = {
+    "Backpack", "Coffee Maker", "Desk Lamp", "Headphones", "Laptop Stand", "Mobile Phone", "Notebook", 
+    "Smart Watch", "Speaker System", "Tablet Cover", "Travel Mug", "Water Bottle", "Wireless Mouse", 
+    "Yoga Mat", "Zip Wallet", "Alarm Clock", "Bluetooth Earbuds", "Camera", "Drone", "Electric Kettle", 
+    "Fitness Tracker", "Game Controller", "Hair Dryer", "Ice Maker", "Juicer", "Keyboard", "Luggage", 
+    "Mouse Pad", "Night Light", "Oven Mitts", "Projector", "Quilt", "Router", "Smart Thermostat", 
+    "Toaster Oven", "USB Hub", "Vacuum Cleaner", "Wine Opener", "Xylophone", "Yard Tools", "Zipper Pouch", 
+    "Air Purifier", "Bike Helmet", "Card Holder", "Desk Organizer", "E-Reader", "Face Mask", "Garden Hose", 
+    "Heat Pad", "Ink Cartridge", "Jacket", "Karaoke Machine", "Lunch Box", "Microphone", "Neck Pillow", 
+    "Office Chair", "Portable Fan", "Quilt Cover", "Refrigerator", "Shoes", "Tablet Pen", "Umbrella", 
+    "Vanity Mirror", "Wireless Charger", "X-ray Scanner", "Yoga Block", "Zinc Supplement", "Action Camera", 
+    "Baby Monitor", "Car Charger", "Desktop PC", "Electric Blanket", "Flash Drive", "Guitar Tuner", "Hat", 
+    "Induction Stove", "Jewelry Box", "Kitchen Scale", "Lawn Mower", "Media Player", "Neon Sign", 
+    "Outdoor Speaker", "Phone Charger", "Quiet Fan", "Running Shoes", "Smart Lightbulb", "Tennis Racket", 
+    "USB Drive", "Video Doorbell", "Watch Case", "X-ray Machine", "Yoga Strap", "Zebra-print Socks"
+};
+
+// Function to generate a product name
+void generate_product_name(char* dest) {
+    int adj1 = rand() % (sizeof(adjectives) / sizeof(adjectives[0]));
+    int adj2 = rand() % (sizeof(adjectives) / sizeof(adjectives[0]));
+    int product = rand() % (sizeof(products) / sizeof(products[0]));
+
+    // Clear the destination string
+    dest[0] = '\0';
+
+    // Concatenate two adjectives and the product name
+    strncat(dest, adjectives[adj1], PRODUCT_DESCRIPT_LEN - strlen(dest) - 1);
+    strncat(dest, " ", PRODUCT_DESCRIPT_LEN - strlen(dest) - 1);
+    strncat(dest, adjectives[adj2], PRODUCT_DESCRIPT_LEN - strlen(dest) - 1);
+    strncat(dest, " ", PRODUCT_DESCRIPT_LEN - strlen(dest) - 1);
+    strncat(dest, products[product], PRODUCT_DESCRIPT_LEN - strlen(dest) - 1);
+}
+
+// Initialize database with testing data
+void init_test_database(product_t* db, ean13_t size) {
+    for (ean13_t i = 0; i < size; i++) {
+        product_t product = {
+            i,
+            (2 * i + 2) * (0.115) * 100,
+            true,
+        };
+        // sprintf(product.description, "Product #%lu", i);
+        generate_product_name(product.description);
+        db[i] = product;
+    }
+}
+
+// Searches initialized database for matching EAN-13 product ID and returns info
+product_t db_query_read(product_t* db, ean13_t product_id) {
+    for (ean13_t i = 0; i < DB_SIZE; i++) {
+        // Found match
+        if (db[i].id == product_id) {
+            product_t db_product = {
+                product_id,
+                db[i].price,
+                true,
+            };
+            strcpy(db_product.description, db[i].description);
+
+            return db_product;
+        }
+    }
+
+    // No product with that ID in DB
+    product_t db_product = { product_id, 0, false, "N/A" };
+    return db_product;
+}
+
+// Find the location of the customer order sheet or create one
+customer_tab_t* find_or_add_customer(customer_tab_t** head, customer_t customer_id) {
+    customer_tab_t* temp = *head; //start at begining of linked list
+
+    // Look through every customer in database until match
+    while (temp != NULL) {
+        // Found
+        if (temp->customer_id == customer_id) {
+            return temp;
+        }
+
+        temp = temp->next;
+    }
+
+    // Create new customer if not found
+    customer_tab_t* new_customer = malloc(sizeof(customer_tab_t)); //alocate new space to a customer tab
+    new_customer->customer_id = customer_id;
+    new_customer->products = NULL;
+    new_customer->next = *head; // Add to head of list
+    *head = new_customer;
+
+    return new_customer;
+}
+
+// Find the location of the customer product order entry or create one
+// NOTE: first arg is the head of the linked list containing product data FOR A PREDETERMINED CUSTOMER
+product_order_t* find_or_add_product(product_order_t** product_list, uint16_t product_id) {
+    product_order_t* temp = *product_list;
+
+    // Look through every product the customer has scanned until match
+    while (temp != NULL) {
+        // Found
+        if (temp->product_id == product_id) {
+            return temp;
+        }
+
+        temp = temp->next;
+    }
+
+    // Create new product entry if not found
+    product_order_t* new_product = malloc(sizeof(product_order_t));
+    new_product->product_id = product_id;
+    new_product->quantity = 0;
+    new_product->next = *product_list; // Add to head of list
+    *product_list = new_product;
+
+    return new_product;
+}
+
+void modify_product_quantity(product_order_t* product, uint16_t quantity, scan_type_t command) {
+    switch (command) {
+        case ADD:
+            product->quantity += quantity;
+            LOG_INFO("ADD ID: %lu, QTY: %d\n", product->product_id, product->quantity);
+            break;
+        case REMOVE:
+            if (product->quantity > quantity) {
+                product->quantity -= quantity;
+            } else {
+                // Make sure we don't get negative amount of outstanding items in cart
+                product->quantity = 0;
+            }
+            LOG_INFO("REMOVE ID: %lu, QTY: %d\n", product->product_id, product->quantity);
+            break;
+        case DELETE:
+            product->quantity = 0;
+            LOG_INFO("DELETE ID: %lu, QTY: %d\n", product->product_id, product->quantity);
+            break;
+        case WIPE:
+            break;
+    }
+}
+
+// Remove customer and all their products
+void wipe_customer(customer_tab_t **head, customer_t customer_id) {
+    customer_tab_t* temp = *head;
+    customer_tab_t* prev = NULL;
+
+    while (temp != NULL && temp->customer_id != customer_id) {
+        prev = temp;
+        temp = temp->next;
+    }
+
+    // Customer not found
+    if (temp == NULL) {
+        return;
+    }
+
+    // Free all product entries
+    product_order_t* product = temp->products;
+    while (product != NULL) {
+        product_order_t* next_product = product->next;
+        free(product);
+        product = next_product;
+    }
+
+    // Remove customer from list
+    if (prev != NULL) {
+        prev->next = temp->next;
+    } else {
+        *head = temp->next;
+    }
+
+    free(temp);
+    LOG_DBG("Customer %u wiped\n", customer_id);
+}

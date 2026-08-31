@@ -1,0 +1,75 @@
+#pragma once
+#ifndef SRC_DOCDB_UTF8_H_
+#define SRC_DOCDB_UTF8_H_
+
+#include "concepts.h"
+namespace docdb {
+
+///Aided using common development resources
+template<typename OutputIterator>
+OutputIterator wideToUtf8(wchar_t wideChar, OutputIterator outputIterator) {
+    if (wideChar == 0){
+        *outputIterator++ = '\xC0'; //Modified UTF-8
+        *outputIterator++ = '\x80';
+    } else if (wideChar <= 0x7F) {
+        // Single-byte character
+        *outputIterator++ = static_cast<char>(wideChar & 0xFF);
+    } else if (wideChar <= 0x7FF) {
+        // Two-byte character
+        *outputIterator++ = static_cast<char>((wideChar >> 6) | 0xC0);
+        *outputIterator++ = static_cast<char>((wideChar & 0x3F) | 0x80);
+    } else if (wideChar <= 0xFFFF) {
+        // Three-byte character
+        *outputIterator++ = static_cast<char>((wideChar >> 12) | 0xE0);
+        *outputIterator++ = static_cast<char>(((wideChar >> 6) & 0x3F) | 0x80);
+        *outputIterator++ = static_cast<char>((wideChar & 0x3F) | 0x80);
+    } else if (wideChar <= 0x10FFFF) {
+        // Four-byte character
+        *outputIterator++ = static_cast<char>((wideChar >> 18) | 0xF0);
+        *outputIterator++ = static_cast<char>(((wideChar >> 12) & 0x3F) | 0x80);
+        *outputIterator++ = static_cast<char>(((wideChar >> 6) & 0x3F) | 0x80);
+        *outputIterator++ = static_cast<char>((wideChar & 0x3F) | 0x80);
+    } else {
+        // Invalid Unicode code point
+        throw std::invalid_argument("Invalid Unicode code point");
+    }
+    return outputIterator;
+}
+
+template<typename InputIterator>
+wchar_t utf8ToWide(InputIterator &iter, InputIterator end) {
+
+    auto next = [&]{ return static_cast<unsigned char>(iter == end?0:*iter++);};
+    auto firstByte = next();
+    if (firstByte <= 0x7F) {
+        // Single-byte character
+        return static_cast<wchar_t>(firstByte);
+    } else if (firstByte <= 0xDF) {
+        // Two-byte character
+        auto secondByte = next();
+        return static_cast<wchar_t>(((firstByte & 0x1F) << 6) | (secondByte & 0x3F));
+    } else if (firstByte <= 0xEF) {
+        // Three-byte character
+        auto secondByte = next();
+        auto thirdByte = next();
+        return static_cast<wchar_t>(((firstByte & 0xF) << 12) | ((secondByte & 0x3F) << 6) | (thirdByte & 0x3F));
+    } else if (firstByte <= 0xF4) {
+        // Four-byte character
+        auto secondByte = static_cast<unsigned char>(*iter++);
+        auto thirdByte = static_cast<unsigned char>(*iter++);
+        auto fourthByte = static_cast<unsigned char>(*iter++);
+        return static_cast<wchar_t>(((firstByte & 0x7) << 18) | ((secondByte & 0x3F) << 12) | ((thirdByte & 0x3F) << 6) | (fourthByte & 0x3F));
+    } else {
+        throw std::invalid_argument("Invalid UTF-8 sequence");
+    }
+}
+
+
+}
+
+
+
+
+
+
+#endif /* SRC_DOCDB_UTF8_H_ */

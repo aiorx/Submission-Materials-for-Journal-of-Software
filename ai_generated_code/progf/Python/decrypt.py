@@ -1,0 +1,94 @@
+# Simple ransomware decryption tool that decrypts files encrypted with AES-CBC-128.
+# This tool requires the key/salt and IV used for encryption.
+#
+# Wholly Aided using common development resources.
+
+import argparse
+from pathlib import Path
+
+from Cryptodome.Cipher import AES
+from Cryptodome.Util.Padding import unpad
+
+
+def decrypt_files(
+    key_hex: str,
+    iv_hex: str,
+    folder_path: Path,
+) -> int:
+    """
+    Decrypt all files with .enc extension in the Downloads folder.
+
+    Args:
+        salt_hex: Hexadecimal string of the salt used for key derivation
+        iv_hex: Hexadecimal string of the IV used for encryption
+        use_machine_guid: Whether to derive key from MachineGuid (default: True)
+        key_hex: Hexadecimal string of the key (if not using MachineGuid)
+
+    Returns:
+        int: Number of files successfully decrypted
+    """
+    key = bytes.fromhex(key_hex)
+    iv = bytes.fromhex(iv_hex)
+
+    # Decrypt each file in the Downloads folder
+    print(f"Decrypting files in {folder_path}...")
+
+    successfully_decrypted = 0
+
+    for file in folder_path.glob("*.enc"):
+        if not file.is_file():
+            continue
+        if not file.suffix == ".enc":
+            continue
+
+        original_filename = file.with_suffix("")
+
+        try:
+            # Read the encrypted data
+            with open(file, "rb") as fp1:
+                encrypted_data = fp1.read()
+
+            # Decrypt the data
+            cipher = AES.new(key, AES.MODE_CBC, iv=iv)
+            decrypted_data = unpad(cipher.decrypt(encrypted_data), 16)
+
+            # Write the decrypted data to the original filename
+            with open(original_filename, "wb") as fp2:
+                fp2.write(decrypted_data)
+
+            # Delete the encrypted file
+            file.unlink()
+
+            print(f"Decrypted {file} -> {original_filename}")
+            successfully_decrypted += 1
+
+        except Exception as e:
+            print(f"Error decrypting {file}: {e}")
+
+    return successfully_decrypted
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Decrypt files encrypted by ransomware"
+    )
+    parser.add_argument("--key", help="Hex string of the key", required=True)
+    parser.add_argument(
+        "--iv", help="Hex string of the IV used for encryption", required=True
+    )
+    parser.add_argument(
+        "--path",
+        help="Path to the folder to decrypt (default is the current folder)",
+        default=".",
+    )
+
+    args = parser.parse_args()
+
+    # Decrypt all files with .enc extension
+    num_decrypted = decrypt_files(
+        key_hex=args.key,
+        iv_hex=args.iv,
+        folder_path=Path(args.path).resolve(),
+    )
+
+    print(f"Successfully decrypted {num_decrypted} files.")

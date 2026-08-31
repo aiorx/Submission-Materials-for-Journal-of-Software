@@ -1,0 +1,1 @@
+// this was Crafted with standard coding tools by several prompt

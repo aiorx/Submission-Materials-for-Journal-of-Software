@@ -1,0 +1,33 @@
+# pragma once
+
+#include "ExprBlock.h"
+#include "expression.h"
+#include <memory>
+namespace JaneZ {
+class ExprLoop : public Expression {
+public:
+    std::shared_ptr<ExprBlock> infinitieLoop;
+    std::shared_ptr<Expression> condition;
+    std::shared_ptr<ExprBlock> PredicateLoopExpression;
+
+    //Start Assisted using common GitHub development utilities.
+    ExprLoop(std::shared_ptr<ExprBlock> loopBlock)
+        : infinitieLoop(std::move(loopBlock)),
+          condition(nullptr),
+          PredicateLoopExpression(nullptr) {}
+
+    ExprLoop(std::shared_ptr<Expression> cond,
+             std::shared_ptr<ExprBlock> predLoopExpr)
+        : infinitieLoop(nullptr),
+          condition(std::move(cond)),
+          PredicateLoopExpression(std::move(predLoopExpr)) {}
+    //End Assisted using common GitHub development utilities.
+
+    ~ExprLoop() = default;
+
+    void accept(ASTVisitor &visitor) override {
+        visitor.visit(*this);
+    }
+ 
+};
+}

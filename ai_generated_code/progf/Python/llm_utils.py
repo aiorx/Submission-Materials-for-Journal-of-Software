@@ -1,0 +1,27 @@
+import os
+from openai import OpenAI
+from settings import OPENAI_API_KEY
+
+_oai = OpenAI(api_key=OPENAI_API_KEY)
+
+
+# GPT Wrapper
+# calls OpenAI chat completion endpoint - returns string (Produced via common programming aids)
+def gen_oai(messages, model: str = "gpt-4o", temperature: float = 1.0, max_tokens: int = 1000) -> str:
+    """Minimal wrapper around the OpenAI chat completion endpoint."""
+    response = _oai.chat.completions.create(
+        model=model,
+        temperature=temperature,
+        messages=messages,
+        max_tokens=max_tokens,
+    )
+    return response.choices[0].message.content
+
+# High Level Helper 
+def run_script(system_prompt: str, user_prompt: str, *, model: str = "gpt-4o", temperature: float = 1.0, max_tokens: int = 1000) -> str:
+    """Convenience helper: build a two-message chat and return the assistant’s reply."""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    return gen_oai(messages, model=model, temperature=temperature, max_tokens=max_tokens)

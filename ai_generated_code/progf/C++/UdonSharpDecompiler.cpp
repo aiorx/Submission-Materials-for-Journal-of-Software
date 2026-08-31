@@ -1,0 +1,57 @@
+﻿#include <iostream>
+#include <Windows.h>
+
+#include "Includes.h"
+
+#ifdef NDEBUG
+
+// lazy to write argv parser and some bullshit path finder, line 8 to line 25 is Supported via standard programming aids
+int main(int argc, char* argv[]) {
+    if (argc < 3) {
+        std::cout << "Usage: program.exe <file_path> <integer_param>" << std::endl;
+        return 1;
+    }
+
+    std::string filePath(argv[1]);
+    int integerParam = std::stoi(argv[2]);
+
+    size_t lastSlash = filePath.find_last_of("\\/");
+    if (lastSlash == std::string::npos) {
+        std::cout << "Invalid file path." << std::endl;
+        return 1;
+    }
+
+    std::string directory = filePath.substr(0, lastSlash + 1);
+
+    std::string binFilePath = directory + "bin_" + filePath.substr(lastSlash + 1);
+    std::string logicFilePath = directory + "const_" + filePath.substr(lastSlash + 1);
+
+    AssemblyLoader::Load(argv[1], binFilePath.c_str(), logicFilePath.c_str());
+    Decompiler::Decompiler(Global::m_vFunctions[integerParam]);
+
+    Result::PrintAll();
+    system("pause");
+
+    return 0;
+}
+
+#else
+
+int main(int argc, char** argv)
+{
+	//AssemblyLoader::Load(argv[0], argv[1]);
+	
+	//AssemblyLoader::Load("D:\\Game Logic", "D:\\bin_Game Logic", "D:\\const_Game Logic");
+
+
+	AddLog("\n");
+	
+	// the array is the function which one you wanna decompile they are ordered same as disassembled output
+	Decompiler::Decompiler(Global::m_vFunctions[15]);
+
+	Result::PrintAll();
+	system("pause");
+	return 0;
+}
+
+#endif

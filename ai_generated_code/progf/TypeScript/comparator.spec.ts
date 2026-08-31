@@ -1,0 +1,165 @@
+import { Comparator } from '../comparator';
+
+describe('comparator', () => {
+  it('single field', () => {
+    const c = new Comparator(['id']);
+
+    expect(c.equal(
+      {id: 0, name: 'A'},
+      {id: 0, name: 'B'},
+    )).toBeTruthy();
+
+    expect(c.equal(
+      {uuId: false, name: 'A'},
+      {uuId: false, name: 'B'},
+      ['uuId']
+    )).toBeTruthy();
+
+    expect(c.equal(
+      {uuId: null, name: 'A'},
+      {uuId: 'UUID', name: 'B'},
+      ['uuId']
+    )).toBeFalsy();
+
+    expect(c.equal(
+      {uuId: {}, name: 'A'},
+      {uuId: 'UUID', name: 'B'},
+      ['uuId']
+    )).toBeFalsy();
+
+    expect(c.equal(
+      {uuId: [], name: 'A'},
+      {uuId: 'UUID', name: 'B'},
+      ['uuId']
+    )).toBeFalsy();
+
+    expect(c.equal(
+      {uuId: undefined, name: 'A'},
+      {uuId: 'UUID', name: 'B'},
+      ['uuId']
+    )).toBeFalsy();
+
+    expect(c.equal(
+      {uuId: undefined, name: 'A'},
+      {uuId: undefined, name: 'B'},
+      ['uuId']
+    )).toBeFalsy();
+
+    expect(c.equal(
+      {name: 'A'},
+      {name: 'B'},
+      ['uuId']
+    )).toBeFalsy();
+
+    expect(c.equal(
+      {path: 'body/div', name: 'A'},
+      {path: 'body/div', name: 'B'},
+      ['path']
+    )).toBeTruthy();
+
+    expect(c.equal(
+      {id: 0, name: 'A'},
+      {id: 0, name: 'B'},
+      [['id']]
+    )).toBeTruthy();
+
+    expect(c.equal(
+      {id: 0, name: 'A'},
+      {id: 0, name: 'B'},
+      ['id', 'name']
+    )).toBeTruthy();
+
+    expect(c.equal(
+      {id: 0, name: 'A'},
+      {name: 'A'},
+      ['id', 'name']
+    )).toBeTruthy();
+
+    expect(c.equal(
+      {id: 0, name: 'A'},
+      {id: 1, name: 'A'},
+      ['id', 'name']
+    )).toBeFalsy();
+  });
+
+  it('multiple fields', () => {
+    const c = new Comparator([['id', 'status']]);
+
+    expect(c.equal(
+      {id: 0, name: 'A', status: 'N'},
+      {id: 0, name: 'B', status: 'N'},
+    )).toBeTruthy();
+
+    expect(c.equal(
+      {id: 0, name: 'A', status: 'N'},
+      {id: 1, name: 'B', status: 'N'},
+    )).toBeFalsy();
+
+    expect(c.equal(
+      {id: false, name: 'B', status: 'N'},
+      {id: false, name: 'B', status: 'M'},
+      [['id', 'name']]
+    )).toBeTruthy();
+
+    expect(c.equal(
+      {id: false, name: 'B', status: 'N'},
+      {id: false, name: 'B', status: 'M'},
+      [['id', 'status'], ['name']]
+    )).toBeTruthy();
+
+  });
+
+});
+
+describe('Test Supported via standard programming aids', () => {
+  let comparator: Comparator;
+
+  beforeEach(() => {
+    comparator = new Comparator();
+  });
+
+  describe('equal()', () => {
+    it('should return true for two identical objects', () => {
+      const obj1 = {uuId: '123', id: '456'};
+      const obj2 = {uuId: '123', id: '456'};
+      expect(comparator.equal(obj1, obj2)).toBe(true);
+    });
+
+    it('should return true for two objects with the same values for the specified fields', () => {
+      const obj1 = {uuId: '123', id: '456', name: 'Jane Doe'};
+      const obj2 = {uuId: '123', id: '456', name: 'John Doe'};
+      expect(comparator.equal(obj1, obj2, ['uuId', 'id'])).toBe(true);
+    });
+
+    it('should return false for two objects with different values for the specified fields', () => {
+      const obj1 = {uuId: '123', id: '456', name: 'Jane Doe'};
+      const obj2 = {uuId: '789', id: '987', name: 'John Doe'};
+      expect(comparator.equal(obj1, obj2, ['uuId', 'id'])).toBe(false);
+    });
+
+    it('should return false for two objects with different values for the default fields', () => {
+      const obj1 = {uuId: '123', id: '456', name: 'Jane Doe'};
+      const obj2 = {uuId: '789', id: '987', name: 'John Doe'};
+      expect(comparator.equal(obj1, obj2)).toBe(false);
+    });
+
+    it('should return false for two objects with different types', () => {
+      const obj1 = {uuId: '123', id: '456'};
+      const obj2 = ['123', '456'];
+      expect(comparator.equal(obj1, obj2)).toBe(false);
+    });
+
+    it('should return false for two objects with different values for nested fields', () => {
+      const obj1 = {uuId: '123', id: '456', data: {name: 'Jane Doe'}};
+      const obj2 = {uuId: '789', id: '987', data: {name: 'John Doe'}};
+      expect(comparator.equal(obj1, obj2, ['uuId', 'id', 'data.name'])).toBe(false);
+    });
+
+    it('should return true for two objects with same values for nested fields', () => {
+      const obj1 = {uuId: '123', id: '456', data: {name: 'Jane Doe'}};
+      const obj2 = {uuId: '789', id: '987', data: {name: 'Jane Doe'}};
+      expect(comparator.equal(obj1, obj2, ['uuId', 'id', 'data.name'])).toBe(false);
+    });
+
+  });
+});

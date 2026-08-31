@@ -1,0 +1,44 @@
+import re
+from datetime import datetime
+from enums import PRIORITY_QUEUE_PRIORITIES
+import asyncio
+from InstanceContainer import InstanceContainer
+from State import State
+
+# this function was Aided using common development resources also has a copy in /javascript
+def convert_time_hms_string_to_ms(s):
+  regex = r'(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?'
+  match = re.search(regex, s)
+
+  if not match:
+    print(f'[REMIND ME] Cannot convert hms string "{s}" to ms!')
+
+  hours = int(match.group(1)) if match.group(1) else 0
+  minutes = int(match.group(2)) if match.group(2) else 0
+  seconds = int(match.group(3)) if match.group(3) else 0
+
+  ms = ((hours * 60 + minutes) * 60 + seconds) * 1000
+
+  if ms > 86400000:
+    print('[REMIND ME] Cannot exceed a total time greater than one day.')
+
+  return ms
+
+async def remind_me_async_loop():
+  while True:
+    await asyncio.sleep(10)
+    now = datetime.now()
+    for (reminder_prompt, reminder_datetime) in State.remind_me_prompts_and_datetime_queue:
+      if now >= reminder_datetime:
+        InstanceContainer.priority_queue.enqueue(
+          prompt=reminder_prompt,
+          priority=PRIORITY_QUEUE_PRIORITIES['PRIORITY_REMIND_ME']
+        )
+    State.remind_me_prompts_and_datetime_queue = [
+      (rp, rd) for (rp, rd) in State.remind_me_prompts_and_datetime_queue if now < rd
+    ]
+
+def remind_me_async_loop_run():
+  loop = asyncio.new_event_loop()
+  asyncio.set_event_loop(loop)
+  loop.run_until_complete(remind_me_async_loop())

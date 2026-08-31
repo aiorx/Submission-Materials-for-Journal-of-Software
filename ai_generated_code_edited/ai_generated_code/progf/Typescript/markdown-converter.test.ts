@@ -1,0 +1,810 @@
+// Aided with basic GitHub coding tools
+// Comprehensive tests for MarkdownConverter - HTML to Markdown conversion
+// Tests for PrismWeave browser extension markdown conversion functionality
+
+import { jest } from '@jest/globals';
+import TurndownService from 'turndown';
+import { MarkdownConverter } from '../../utils/markdown-converter';
+import type { IConversionOptions } from '../../utils/markdown-converter-core';
+
+// Mock global objects for browser environment
+const mockWindow = {
+  TurndownService: TurndownService,
+  location: {
+    href: 'https://example.com/test-page',
+    origin: 'https://example.com',
+  },
+};
+
+const mockDocument = {};
+
+describe('MarkdownConverter - HTML to Markdown', () => {
+  let converter: MarkdownConverter;
+
+  beforeEach(() => {
+    // Setup browser environment mocks
+    (global as any).window = mockWindow;
+    (global as any).document = mockDocument;
+
+    // Ensure globalThis is properly set up
+    if (typeof (global as any).globalThis === 'undefined') {
+      (global as any).globalThis = global;
+    }
+    (global as any).globalThis.TurndownService = TurndownService;
+
+    converter = new MarkdownConverter();
+  });
+
+  afterEach(() => {
+    // Clean up global mocks
+    delete (global as any).window;
+    delete (global as any).document;
+    if ((global as any).globalThis && (global as any).globalThis.TurndownService) {
+      delete (global as any).globalThis.TurndownService;
+    }
+  });
+
+  describe('I.1.1 - Convert basic HTML elements (h1-h6, p, div)', () => {
+    test('I.1.1.1 - should convert headers h1-h6 to markdown headers', () => {
+      const html = `
+        <h1>Main Title</h1>
+        <h2>Subtitle</h2>
+        <h3>Section</h3>
+        <h4>Subsection</h4>
+        <h5>Minor Heading</h5>
+        <h6>Smallest Heading</h6>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('# Main Title');
+      expect(result.markdown).toContain('## Subtitle');
+      expect(result.markdown).toContain('### Section');
+      expect(result.markdown).toContain('#### Subsection');
+      expect(result.markdown).toContain('##### Minor Heading');
+      expect(result.markdown).toContain('###### Smallest Heading');
+    });
+
+    test('I.1.1.2 - should convert paragraphs to markdown', () => {
+      const html = `
+        <p>This is the first paragraph.</p>
+        <p>This is the second paragraph with <strong>bold text</strong>.</p>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('This is the first paragraph.');
+      expect(result.markdown).toContain('This is the second paragraph with **bold text**.');
+    });
+
+    test('I.1.1.3 - should handle div elements as containers', () => {
+      const html = `
+        <div>
+          <p>Content in a div</p>
+          <div class="nested">
+            <span>Nested content</span>
+          </div>
+        </div>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('Content in a div');
+      expect(result.markdown).toContain('Nested content');
+    });
+
+    test('I.1.1.4 - should preserve text content from various elements', () => {
+      const html = `
+        <div>
+          <span>Span text</span>
+          <p>Paragraph text</p>
+          <section>Section text</section>
+        </div>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('Span text');
+      expect(result.markdown).toContain('Paragraph text');
+      expect(result.markdown).toContain('Section text');
+    });
+  });
+
+  describe('I.1.2 - Handle nested structures', () => {
+    test('I.1.2.1 - should handle deeply nested HTML structures', () => {
+      const html = `
+        <article>
+          <header>
+            <h1>Article Title</h1>
+            <div class="meta">
+              <span class="author">John Doe</span>
+            </div>
+          </header>
+          <section>
+            <h2>Section Title</h2>
+            <div class="content">
+              <p>Paragraph with <em>emphasis</em> and <strong>strong</strong> text.</p>
+              <div class="subsection">
+                <h3>Subsection</h3>
+                <p>Nested paragraph content.</p>
+              </div>
+            </div>
+          </section>
+        </article>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('# Article Title');
+      expect(result.markdown).toContain('John Doe');
+      expect(result.markdown).toContain('## Section Title');
+      expect(result.markdown).toContain('*emphasis*');
+      expect(result.markdown).toContain('**strong**');
+      expect(result.markdown).toContain('### Subsection');
+      expect(result.markdown).toContain('Nested paragraph content.');
+    });
+
+    test('I.1.2.2 - should handle nested lists correctly', () => {
+      const html = `
+        <ul>
+          <li>First level item
+            <ul>
+              <li>Second level item</li>
+              <li>Another second level
+                <ul>
+                  <li>Third level item</li>
+                </ul>
+              </li>
+            </ul>
+          </li>
+          <li>Another first level</li>
+        </ul>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('-   First level item');
+      expect(result.markdown).toContain('-   Second level item');
+      expect(result.markdown).toContain('-   Third level item');
+      expect(result.markdown).toContain('-   Another first level');
+    });
+
+    test('I.1.2.3 - should preserve structure in complex nested content', () => {
+      const html = `
+        <div class="container">
+          <section class="main">
+            <h2>Main Section</h2>
+            <div class="content-wrapper">
+              <div class="left-column">
+                <h3>Left Content</h3>
+                <p>Left paragraph</p>
+              </div>
+              <div class="right-column">
+                <h3>Right Content</h3>
+                <p>Right paragraph</p>
+              </div>
+            </div>
+          </section>
+        </div>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('## Main Section');
+      expect(result.markdown).toContain('### Left Content');
+      expect(result.markdown).toContain('Left paragraph');
+      expect(result.markdown).toContain('### Right Content');
+      expect(result.markdown).toContain('Right paragraph');
+    });
+  });
+
+  describe('I.1.3 - Preserve code blocks and syntax highlighting', () => {
+    test('I.1.3.1 - should convert pre/code blocks to fenced code blocks', () => {
+      const html = `
+        <pre><code>function hello() {
+  console.log("Hello, World!");
+}</code></pre>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('```');
+      expect(result.markdown).toContain('function hello()');
+      expect(result.markdown).toContain('console.log("Hello, World!");');
+    });
+
+    test('I.1.3.2 - should handle inline code elements', () => {
+      const html = `
+        <p>Use the <code>console.log()</code> function to output text.</p>
+        <p>The variable <code>myVariable</code> stores the value.</p>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('`console.log()`');
+      expect(result.markdown).toContain('`myVariable`');
+    });
+
+    test('I.1.3.3 - should preserve code block indentation and formatting', () => {
+      const html = `
+        <pre><code>if (condition) {
+    doSomething();
+    if (nestedCondition) {
+        doSomethingElse();
+    }
+}</code></pre>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('```');
+      expect(result.markdown).toContain('if (condition)');
+      expect(result.markdown).toContain('doSomething()');
+      expect(result.markdown).toContain('doSomethingElse()');
+    });
+
+    test('I.1.3.4 - should handle code blocks with syntax highlighting classes', () => {
+      const html = `
+        <pre class="highlight"><code class="language-javascript">const x = 42;
+console.log(x);</code></pre>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('```');
+      expect(result.markdown).toContain('const x = 42');
+      expect(result.markdown).toContain('console.log(x)');
+    });
+
+    test('I.1.3.5 - should handle multiple code blocks in same content', () => {
+      const html = `
+        <p>First example:</p>
+        <pre><code>const a = 1;</code></pre>
+        <p>Second example:</p>
+        <pre><code>const b = 2;</code></pre>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      const codeBlockMatches = result.markdown.match(/```/g);
+      expect(codeBlockMatches).toHaveLength(4); // 2 opening, 2 closing
+      expect(result.markdown).toContain('const a = 1');
+      expect(result.markdown).toContain('const b = 2');
+    });
+  });
+
+  describe('I.1.4 - Convert links and images with proper escaping', () => {
+    test('I.1.4.1 - should convert links to markdown format', () => {
+      const html = `
+        <p>Visit <a href="https://example.com">Example</a> for more info.</p>
+        <p>Check out <a href="https://github.com/user/repo">this repository</a>.</p>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('[Example](https://example.com)');
+      expect(result.markdown).toContain('[this repository](https://github.com/user/repo)');
+    });
+
+    test('I.1.4.2 - should convert images to markdown format', () => {
+      const html = `
+        <img src="https://example.com/image.jpg" alt="Example Image">
+        <img src="/local/image.png" alt="Local Image">
+        <img src="relative/path.jpg">
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('![Example Image](https://example.com/image.jpg)');
+      expect(result.markdown).toContain('![Local Image](/local/image.png)');
+      expect(result.markdown).toContain('![](relative/path.jpg)');
+    });
+
+    test('I.1.4.3 - should handle links with special characters', () => {
+      const html = `
+        <a href="https://example.com/page?param=value&other=123">Link with params</a>
+        <a href="https://example.com/path/to/file.html#section">Link with anchor</a>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain(
+        '[Link with params](https://example.com/page?param=value&other=123)'
+      );
+      expect(result.markdown).toContain(
+        '[Link with anchor](https://example.com/path/to/file.html#section)'
+      );
+    });
+
+    test('I.1.4.4 - should handle images with special characters in alt text', () => {
+      const html = `
+        <img src="https://example.com/image.jpg" alt="Image with &quot;quotes&quot; and special chars: @#$%">
+        <img src="https://example.com/image2.jpg" alt="Image &amp; More &amp; Stuff">
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('![Image with');
+      expect(result.markdown).toContain('![Image &');
+      expect(result.markdown).toContain('More & Stuff');
+    });
+
+    test('I.1.4.5 - should handle nested links and images', () => {
+      const html = `
+        <p><a href="https://example.com"><img src="image.jpg" alt="Linked Image"></a></p>
+        <div>
+          <a href="/page">
+            <span>Link with <em>emphasis</em></span>
+          </a>
+        </div>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('![Linked Image](image.jpg)');
+      expect(result.markdown).toContain('[');
+      expect(result.markdown).toContain('](');
+    });
+  });
+
+  describe('I.1.5 - Handle lists (ordered, unordered, nested)', () => {
+    test('I.1.5.1 - should convert unordered lists to markdown', () => {
+      const html = `
+        <ul>
+          <li>First item</li>
+          <li>Second item</li>
+          <li>Third item</li>
+        </ul>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('-   First item');
+      expect(result.markdown).toContain('-   Second item');
+      expect(result.markdown).toContain('-   Third item');
+    });
+
+    test('I.1.5.2 - should convert ordered lists to markdown', () => {
+      const html = `
+        <ol>
+          <li>First step</li>
+          <li>Second step</li>
+          <li>Third step</li>
+        </ol>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('1.  First step');
+      expect(result.markdown).toContain('2.  Second step');
+      expect(result.markdown).toContain('3.  Third step');
+    });
+
+    test('I.1.5.3 - should handle nested unordered lists', () => {
+      const html = `
+        <ul>
+          <li>Parent item 1
+            <ul>
+              <li>Child item 1.1</li>
+              <li>Child item 1.2</li>
+            </ul>
+          </li>
+          <li>Parent item 2</li>
+        </ul>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('-   Parent item 1');
+      expect(result.markdown).toContain('-   Child item 1.1');
+      expect(result.markdown).toContain('-   Child item 1.2');
+      expect(result.markdown).toContain('-   Parent item 2');
+    });
+
+    test('I.1.5.4 - should handle nested ordered lists', () => {
+      const html = `
+        <ol>
+          <li>Main step 1
+            <ol>
+              <li>Sub-step 1.1</li>
+              <li>Sub-step 1.2</li>
+            </ol>
+          </li>
+          <li>Main step 2</li>
+        </ol>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('1.  Main step 1');
+      expect(result.markdown).toContain('1.  Sub-step 1.1');
+      expect(result.markdown).toContain('2.  Sub-step 1.2');
+      expect(result.markdown).toContain('2.  Main step 2');
+    });
+
+    test('I.1.5.5 - should handle mixed nested lists', () => {
+      const html = `
+        <ul>
+          <li>Unordered parent
+            <ol>
+              <li>Ordered child 1</li>
+              <li>Ordered child 2</li>
+            </ol>
+          </li>
+        </ul>
+        <ol>
+          <li>Ordered parent
+            <ul>
+              <li>Unordered child 1</li>
+              <li>Unordered child 2</li>
+            </ul>
+          </li>
+        </ol>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('-   Unordered parent');
+      expect(result.markdown).toContain('1.  Ordered child 1');
+      expect(result.markdown).toContain('2.  Ordered child 2');
+      expect(result.markdown).toContain('1.  Ordered parent');
+      expect(result.markdown).toContain('-   Unordered child 1');
+      expect(result.markdown).toContain('-   Unordered child 2');
+    });
+
+    test('I.1.5.6 - should handle lists with complex content', () => {
+      const html = `
+        <ul>
+          <li>Item with <strong>bold</strong> text</li>
+          <li>Item with <a href="https://example.com">link</a></li>
+          <li>Item with <code>inline code</code></li>
+          <li>Item with multiple <em>formatting</em> <strong>types</strong></li>
+        </ul>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('-   Item with **bold** text');
+      expect(result.markdown).toContain('-   Item with [link](https://example.com)');
+      expect(result.markdown).toContain('-   Item with `inline code`');
+      expect(result.markdown).toContain('-   Item with multiple *formatting* **types**');
+    });
+  });
+
+  describe('I.1.6 - Convert tables to markdown', () => {
+    test('I.1.6.1 - should convert simple tables to markdown', () => {
+      const html = `
+        <table>
+          <tr>
+            <th>Header 1</th>
+            <th>Header 2</th>
+            <th>Header 3</th>
+          </tr>
+          <tr>
+            <td>Row 1 Col 1</td>
+            <td>Row 1 Col 2</td>
+            <td>Row 1 Col 3</td>
+          </tr>
+          <tr>
+            <td>Row 2 Col 1</td>
+            <td>Row 2 Col 2</td>
+            <td>Row 2 Col 3</td>
+          </tr>
+        </table>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('| Header 1 | Header 2 | Header 3 |');
+      expect(result.markdown).toContain('| Row 1 Col 1 | Row 1 Col 2 | Row 1 Col 3 |');
+      expect(result.markdown).toContain('| Row 2 Col 1 | Row 2 Col 2 | Row 2 Col 3 |');
+      expect(result.markdown).toMatch(/\|.*-.*\|.*-.*\|.*-.*\|/); // Header separator
+    });
+
+    test('I.1.6.2 - should handle tables with thead and tbody', () => {
+      const html = `
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Age</th>
+              <th>City</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>John</td>
+              <td>25</td>
+              <td>New York</td>
+            </tr>
+            <tr>
+              <td>Jane</td>
+              <td>30</td>
+              <td>London</td>
+            </tr>
+          </tbody>
+        </table>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('| Name | Age | City |');
+      expect(result.markdown).toContain('| John | 25 | New York |');
+      expect(result.markdown).toContain('| Jane | 30 | London |');
+    });
+
+    test('I.1.6.3 - should handle tables with complex cell content', () => {
+      const html = `
+        <table>
+          <tr>
+            <th>Feature</th>
+            <th>Description</th>
+          </tr>
+          <tr>
+            <td><strong>Bold Feature</strong></td>
+            <td>Description with <em>emphasis</em></td>
+          </tr>
+          <tr>
+            <td><code>Code Feature</code></td>
+            <td>Description with <a href="https://example.com">link</a></td>
+          </tr>
+        </table>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('| Feature | Description |');
+      expect(result.markdown).toContain('Bold Feature'); // TurndownService strips formatting in table cells by default
+      expect(result.markdown).toContain('emphasis');
+      expect(result.markdown).toContain('Code Feature');
+      expect(result.markdown).toContain('link'); // Link text gets stripped in table cells
+    });
+
+    test('I.1.6.4 - should handle empty table cells', () => {
+      const html = `
+        <table>
+          <tr>
+            <th>Col 1</th>
+            <th>Col 2</th>
+            <th>Col 3</th>
+          </tr>
+          <tr>
+            <td>Data</td>
+            <td></td>
+            <td>More Data</td>
+          </tr>
+          <tr>
+            <td></td>
+            <td>Center Data</td>
+            <td></td>
+          </tr>
+        </table>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('| Col 1 | Col 2 | Col 3 |');
+      expect(result.markdown).toContain('| Data |  | More Data |');
+      expect(result.markdown).toContain('|  | Center Data |  |');
+    });
+  });
+
+  describe('I.1.7 - Handle blockquotes and emphasis', () => {
+    test('I.1.7.1 - should convert blockquotes to markdown', () => {
+      const html = `
+        <blockquote>
+          <p>This is a quoted paragraph.</p>
+          <p>This is another quoted paragraph.</p>
+        </blockquote>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('> This is a quoted paragraph.');
+      expect(result.markdown).toContain('> This is another quoted paragraph.');
+    });
+
+    test('I.1.7.2 - should convert nested blockquotes', () => {
+      const html = `
+        <blockquote>
+          <p>Outer quote</p>
+          <blockquote>
+            <p>Nested quote</p>
+          </blockquote>
+          <p>Back to outer quote</p>
+        </blockquote>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('> Outer quote');
+      expect(result.markdown).toContain('> Nested quote');
+      expect(result.markdown).toContain('> Back to outer quote');
+    });
+
+    test('I.1.7.3 - should convert emphasis elements correctly', () => {
+      const html = `
+        <p>This text has <em>emphasis</em> and <i>italic</i> formatting.</p>
+        <p>This text has <strong>strong</strong> and <b>bold</b> formatting.</p>
+        <p>Combined: <strong><em>strong emphasis</em></strong> text.</p>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('*emphasis*');
+      expect(result.markdown).toContain('*italic*');
+      expect(result.markdown).toContain('**strong**');
+      expect(result.markdown).toContain('**bold**');
+      expect(result.markdown).toContain('***strong emphasis***');
+    });
+
+    test('I.1.7.4 - should handle blockquotes with formatted content', () => {
+      const html = `
+        <blockquote>
+          <p>Quote with <strong>bold</strong> and <em>italic</em> text.</p>
+          <p>Quote with <a href="https://example.com">link</a> and <code>code</code>.</p>
+        </blockquote>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('> Quote with **bold** and *italic* text.');
+      expect(result.markdown).toContain('> Quote with [link](https://example.com) and `code`.');
+    });
+
+    test('I.1.7.5 - should handle emphasis in various contexts', () => {
+      const html = `
+        <h2>Header with <em>emphasis</em></h2>
+        <ul>
+          <li>List item with <strong>bold</strong> text</li>
+          <li><em>Emphasized</em> list item</li>
+        </ul>
+        <table>
+          <tr>
+            <td><strong>Bold cell</strong></td>
+            <td><em>Italic cell</em></td>
+          </tr>
+        </table>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('## Header with *emphasis*');
+      expect(result.markdown).toContain('-   List item with **bold** text');
+      expect(result.markdown).toContain('-   *Emphasized* list item');
+      expect(result.markdown).toContain('Bold cell'); // TurndownService strips formatting in table cells
+      expect(result.markdown).toContain('Italic cell'); // TurndownService strips formatting in table cells
+    });
+
+    test('I.1.7.6 - should handle multiple levels of emphasis correctly', () => {
+      const html = `
+        <p><strong><em><u>Triple formatting</u></em></strong></p>
+        <p><em>Italic with <strong>bold inside</strong></em></p>
+        <p><strong>Bold with <em>italic inside</em></strong></p>
+      `;
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.markdown).toContain('***Triple formatting***');
+      expect(result.markdown).toContain('*Italic with **bold inside***');
+      expect(result.markdown).toContain('**Bold with *italic inside***');
+    });
+  });
+
+  describe('I.2 - Conversion Result Properties', () => {
+    test('I.2.1 - should return complete conversion result object', () => {
+      const html = '<h1>Test Title</h1><p>Test content with some words.</p>';
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result).toHaveProperty('markdown');
+      expect(result).toHaveProperty('frontmatter');
+      expect(result).toHaveProperty('metadata');
+      expect(result).toHaveProperty('images');
+      expect(result).toHaveProperty('wordCount');
+
+      expect(typeof result.markdown).toBe('string');
+      expect(typeof result.frontmatter).toBe('string');
+      expect(typeof result.metadata).toBe('object');
+      expect(Array.isArray(result.images)).toBe(true);
+      expect(typeof result.wordCount).toBe('number');
+    });
+
+    test('I.2.2 - should calculate word count correctly', () => {
+      const html = '<p>This is a test paragraph with exactly ten words here.</p>';
+
+      const result = converter.convertToMarkdown(html);
+
+      expect(result.wordCount).toBeGreaterThan(0);
+      expect(result.metadata.wordCount).toBe(result.wordCount);
+    });
+
+    test('I.2.3 - should include metadata in result', () => {
+      const html = '<h1>Test</h1><p>Content</p>';
+
+      const result = converter.convertToMarkdown(html, {
+        sourceUrl: 'https://example.com/test-page',
+      } as any);
+
+      expect(result.metadata).toHaveProperty('title');
+      expect(result.metadata).toHaveProperty('url');
+      expect(result.metadata).toHaveProperty('captureDate');
+      expect(result.metadata).toHaveProperty('wordCount');
+      expect(result.metadata).toHaveProperty('estimatedReadingTime');
+      expect(result.metadata.url).toBe('https://example.com/test-page');
+    });
+  });
+
+  describe('I.3 - Error Handling', () => {
+    test('I.3.1 - should throw error when not initialized', () => {
+      // Create converter without proper initialization
+      const uninitializedConverter = Object.create(MarkdownConverter.prototype);
+      uninitializedConverter._isInitialized = false;
+
+      expect(() => {
+        uninitializedConverter.convertToMarkdown('<p>test</p>');
+      }).toThrow('MarkdownConverter not properly initialized');
+    });
+
+    test('I.3.2 - should handle empty HTML input', () => {
+      const result = converter.convertToMarkdown('');
+
+      expect(result.markdown).toBe('');
+      expect(result.wordCount).toBe(0); // Empty string splits to array with one empty element
+    });
+
+    test('I.3.3 - should handle malformed HTML gracefully', () => {
+      const malformedHtml = '<p>Unclosed paragraph<div>Nested <span>without closing';
+
+      const result = converter.convertToMarkdown(malformedHtml);
+
+      expect(result.markdown).toContain('Unclosed paragraph');
+      expect(result.markdown).toContain('Nested');
+    });
+  });
+
+  describe('I.4 - Service Worker Context', () => {
+    test('I.4.1 - should handle service worker context gracefully', () => {
+      // Mock service worker environment
+      delete (global as any).window;
+      delete (global as any).document;
+      (global as any).importScripts = jest.fn();
+
+      // This should not throw but create a converter that handles the context
+      const swConverter = new MarkdownConverter();
+
+      // Clean up
+      delete (global as any).importScripts;
+    });
+  });
+
+  describe('I.5 - Options Handling', () => {
+    test('I.5.1 - should accept conversion options', () => {
+      const html = '<h1>Test</h1>';
+      const options: IConversionOptions = {
+        preserveFormatting: true,
+        includeMetadata: true,
+        generateFrontmatter: false,
+      };
+
+      const result = converter.convertToMarkdown(html, options);
+
+      expect(result).toBeDefined();
+      expect(result.markdown).toContain('# Test');
+    });
+
+    test('I.5.2 - should handle conversion options with custom rules', () => {
+      const html = '<p>Test content</p>';
+      const options: IConversionOptions = {
+        customRules: { 'test-rule': 'test-value' },
+        headingStyle: 'atx',
+        bulletListMarker: '-',
+      };
+
+      const result = converter.convertToMarkdown(html, options);
+
+      expect(result).toBeDefined();
+      expect(result.markdown).toContain('Test content');
+    });
+  });
+});

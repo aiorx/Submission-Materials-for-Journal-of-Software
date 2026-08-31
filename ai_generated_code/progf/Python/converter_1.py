@@ -1,0 +1,204 @@
+import sys
+import ijson
+import random
+import logging
+import argparse
+from tqdm import tqdm
+from lxml import etree as ET
+from datetime import datetime
+from typing import Dict, Tuple, List
+
+# *** Docstrings are Aided with basic GitHub coding tools *** #
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s", stream=sys.stdout)
+
+def parse_json(file_path: str) -> ijson.common.items:
+    """
+    Open and parse the JSON file as a binary stream.
+    
+    Args:
+        file_path (str): The path to the JSON file.
+    
+    Returns:
+        ijson.common.items: An iterator over items in the JSON file.
+    """
+    
+    return open(file_path, "rb")
+
+def is_weekend(date_str: str) -> bool:
+    """
+    Check if a given date string falls on a weekend.
+    
+    Args:
+        date_str (str): The date string in the format "%Y-%m-%d %H:%M:%S".
+    
+    Returns:
+        bool: True if the date is a weekend, False otherwise.
+    """
+    
+    date_obj = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+    return date_obj.weekday() in [5, 6]  # Saturday or Sunday
+
+def create_xml_review(review: Dict[str, str]) -> str:
+    """
+    Create an XML representation of a review.
+    
+    Args:
+        review (Dict[str, str]): A dictionary containing review data.
+    
+    Returns:
+        str: The XML string representation of the review.
+    """
+    
+    review_elem = ET.Element("review")
+    ET.SubElement(review_elem, "review_id").text = review["review_id"]
+    ET.SubElement(review_elem, "user_id").text = review["user_id"]
+    ET.SubElement(review_elem, "business_id").text = review["business_id"]
+    
+    ratings = ET.SubElement(review_elem, "ratings")
+    ratings.set("stars", str(review["stars"]))
+    ratings.set("useful", str(review["useful"]))
+    ratings.set("funny", str(review["funny"]))
+    ratings.set("cool", str(review["cool"]))
+    
+    ET.SubElement(review_elem, "text").text = review["text"]
+    
+    date = datetime.strptime(review["date"], "%Y-%m-%d %H:%M:%S")
+    ET.SubElement(review_elem, "date", year=str(date.year), month=str(date.month), day=str(date.day), weekday=date.strftime("%A"))
+    
+    return ET.tostring(review_elem, pretty_print=True, encoding="unicode")
+
+def convert_to_xml(input_file: str, train_file: str, test_file: str, n: int) -> Tuple[int, int]:
+    """
+    Convert JSON reviews to XML format and write to train and test files using reservoir sampling.
+    
+    Args:
+        input_file (str): The path to the JSON input file.
+        train_file (str): The path to the XML train output file.
+        test_file (str): The path to the XML test output file.
+        n (int): The number of items in the reservoir for the test set.
+    
+    Returns:
+        Tuple[int, int]: The number of reviews written to the train and test XML files.
+    """
+    
+    file = parse_json(input_file)
+    reviews = ijson.items(file, "item")
+    
+    reservoir = []
+    train_count = 0
+    test_count = 0
+    
+    # prepare XML files
+    with open(train_file, "w", encoding="utf-8") as train_f, open(test_file, "w", encoding="utf-8") as test_f:
+        train_f.write("<?xml version='1.0' encoding='utf-8'?>\n<root>")
+        test_f.write("<?xml version='1.0' encoding='utf-8'?>\n<root>")
+        
+        # start reservoir sampling
+        for review in tqdm(reviews, desc="Processing reviews"):
+            if is_weekend(review["date"]):
+                xml_review = create_xml_review(review)
+                
+                # n = 0 edge case --> write all reviews to train file
+                if n == 0:
+                    train_f.write(xml_review)
+                    train_count += 1
+                
+                # normal case
+                else:
+                    if len(reservoir) < n:
+                        reservoir.append(xml_review)
+                    else:
+                        j = random.randint(0, train_count + test_count)
+                        if j < n:
+                            train_f.write(reservoir[j])
+                            reservoir[j] = xml_review
+                            train_count += 1
+                        else:
+                            train_f.write(xml_review)
+                            train_count += 1
+                            
+        # write remaining reviews in reservoir to test file
+        if n > 0:
+            for xml_review in reservoir:
+                test_f.write(xml_review)
+                test_count += 1
+        
+        # close XML files
+        train_f.write("</root>")
+        test_f.write("</root>")
+    
+    return train_count, test_count
+
+def count_items(file_path: str) -> int:
+    """
+    Count the number of items in a JSON file.
+    
+    Args:
+        file_path (str): The path to the JSON file.
+    
+    Returns:
+        int: The number of items in the JSON file.
+    """
+    
+    with parse_json(file_path) as file:
+        return sum(1 for _ in ijson.items(file, "item"))
+
+def main() -> None:
+    """
+    Main function to parse arguments and convert JSON reviews to XML format.
+    """
+    
+    parser = argparse.ArgumentParser(description="Convert JSON reviews to XML format.")
+    parser.add_argument("-j", "--json_file", help="Path to the JSON file containing reviews", required=True)
+    parser.add_argument("-t", "--xml_test", help="Filename for the outputted XML test file", required=True)
+    parser.add_argument("-r", "--xml_train", help="Filename for the outputted XML train file", required=True)
+    parser.add_argument("-n", type=int, help="Number of items in the reservoir for the test set", required=True)
+    
+    args = parser.parse_args()
+    train_count, test_count = convert_to_xml(args.json_file, args.xml_train, args.xml_test, args.n)
+
+    logging.info(f"Processed {count_items(args.json_file)} reviews from file {args.json_file}")
+    logging.info(f"Written {train_count} reviews to {args.xml_train}")
+    logging.info(f"Written {test_count} reviews to {args.xml_test}")
+    
+
+if __name__ == "__main__":
+    main()
+
+    """
+    Notes:
+    
+    review.json:
+        Converting to XML: 17it [00:00, 572.75it/s]
+        INFO:root:Processed 17 reviews from file review.json
+        INFO:root:Written 6 reviews to output_cli.xml
+        
+    review_large.json:
+        Converting to XML: 6990280it [04:55, 23666.40it/s]
+        INFO:root:Processed 6990280 reviews from file review_large.json
+        INFO:root:Written 2211365 reviews to output_cli_large.xml
+        
+        Run 1: Memory Usage = 16.98 MiB
+        Run 2: Memory Usage = 16.914 MiB
+        Run 3: Memory Usage = 16.9 MiB
+        
+    reservoir sampling edge case (n = 0):
+        Processing reviews: 6990280it [05:45, 20207.64it/s]
+        INFO:root:Processed 6990280 reviews from file review_large.json
+        INFO:root:Written 2211365 reviews to train_edge.xml
+        INFO:root:Written 0 reviews to test_edge.xml
+        
+        Run 1: Memory Usage = 17.7 MiB
+        
+    reservoir sampling:
+        Processing reviews: 6990280it [05:44, 20267.64it/s]
+        INFO:root:Processed 6990280 reviews from file review_large.json
+        INFO:root:Written 2208365 reviews to train.xml
+        INFO:root:Written 3000 reviews to test.xml
+        
+        Run 1: Memory Usage = 21.04 MiB
+        Run 2: Memory Usage = 20.09 MiB
+        Run 3: Memory Usage = 20.75 MiB
+        Run 4: Memory Usage = 20.95 MiB
+    """

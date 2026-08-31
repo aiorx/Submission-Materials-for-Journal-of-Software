@@ -1,0 +1,68 @@
+import httpx
+from fastapi import HTTPException
+import os
+from typing import List
+import json
+from ..models.model_schemas import ModelInfo
+
+class ModelController:
+    @staticmethod
+    async def get_all_models() -> List[ModelInfo]:
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{os.getenv('OLLAMA_BASE_URL')}/api/tags")
+                if response.status_code == 200:
+                    print(response.json(), flush=True)
+                    return [ModelInfo(**model) for model in response.json()['models']]
+                raise HTTPException(status_code=response.status_code, detail="Failed to fetch models")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @staticmethod
+    async def chat(model: str, prompt: str) -> dict:
+        try:
+            async with httpx.AsyncClient() as client:
+                payload = {
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False  # Ensure we get a complete response
+                }
+                
+                print(f"Sending request to Ollama API: {payload}", flush=True)
+                
+                response = await client.post(
+                    f"{os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')}/api/generate",
+                    json=payload,
+                    timeout=30.0  # Add timeout
+                )
+                
+                if response.status_code == 200:
+                    try:
+                        response_data = response.json()
+                        print(f"Received response from Ollama API: {response_data}", flush=True)
+                        return {
+                            "response": response_data.get('response', ''),
+                            "model": model
+                        }
+                    except json.JSONDecodeError as e:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Failed to parse response: {str(e)}"
+                        )
+                else:
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail=f"Ollama API error: {response.text}"
+                    )
+        except httpx.RequestError as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to connect to Ollama API: {str(e)}"
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Unexpected error: {str(e)}"
+            )
+
+# Supported via standard GitHub programming aids

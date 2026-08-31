@@ -1,0 +1,417 @@
+#include "cscshell.h"
+#include <unistd.h>
+
+
+// COMPLETE
+int cd_cscshell(const char *target_dir){
+    if (target_dir == NULL) {
+        char user_buff[MAX_USER_BUF];
+        if (getlogin_r(user_buff, MAX_USER_BUF) != 0) {
+           perror("run_command");
+           return -1;
+        }
+        struct passwd *pw_data = getpwnam((char *)user_buff);
+        if (pw_data == NULL) {
+           perror("run_command");
+           return -1;
+        }
+        target_dir = pw_data->pw_dir;
+    }
+
+    if(chdir(target_dir) < 0){
+        perror("cd_cscshell");
+        return -1;
+    }
+    return 0;
+}
+
+/*
+** Executes a single "line" of commands (through pipes)
+** If a command fails, the rest of the line should not be executed.
+**
+** The error code from the last command is returned through a pointer
+** to a heap integer on success. If the line is a `cd` command, the
+** return value of `cd_cscshell` is stored by the heap int.
+** -- If there are no commands to execute, returns NULL
+** -- If there were any errors starting any commands,
+**    returns (pointer value) -1
+*/
+int *execute_line(Command *head) {
+    if (head == NULL) {
+        // No commands to execute
+        return NULL;
+    }
+
+    int *status = malloc(sizeof(int));
+    if (status == NULL) {
+        exit(EXIT_FAILURE);
+    }
+
+    int pipefd[2]; // Pipe file descriptors
+    pid_t pid;   // Process ID
+    pid_t *pids = malloc(sizeof(pid_t)); // Array of child PIDs
+    int num_pids = 0; // Number of child PIDs
+
+    while (head != NULL) { // Loop through all the commands in the line
+        if (strcmp(head->args[0], "cd") == 0) { 
+            // Handle 'cd' command separately
+            *status = cd_cscshell(head->args[1]);
+            return status;
+        }
+
+        // Create a pipe
+        if (pipe(pipefd) == -1) {
+            perror("pipe");
+            *status = -1;
+            return status;
+        }
+
+        // Run the command
+        pid = run_command(head);
+        if (pid == -1) {
+            // Error starting the command
+            *status = -1;
+            return status;
+        }
+
+        // Add the PID to the array
+        pids = realloc(pids, (num_pids + 1) * sizeof(pid_t));
+        if (pids == NULL) {
+            exit(EXIT_FAILURE);
+        }
+        pids[num_pids++] = pid;
+
+        // Close the write end of the pipe in the parent
+        if (close(pipefd[1]) == -1) {
+            perror("pipe");
+            *status = -1;
+            return status;
+        }
+
+        // Make the read end of the pipe the standard input for the next command
+        if (dup2(pipefd[0], STDIN_FILENO) == -1) {
+            perror("dup2");
+            *status = -1;
+            return status;
+        }
+
+        // Close the read end of the pipe
+        if (close(pipefd[0]) == -1) {
+            perror("pipe");
+            *status = -1;
+            return status;
+        }
+
+        head = head->next;
+    }
+
+    // Wait for all child processes to finish
+    for (int i = 0; i < num_pids; i++) {
+        waitpid(pids[i], status, 0);
+    }
+
+    free(pids);
+
+    return status;
+
+    #ifdef DEBUG
+    printf("\n***********************\n");
+    printf("BEGIN: Executing line...\n");
+    #endif
+
+    #ifdef DEBUG
+    printf("All children created\n");
+    #endif
+
+    // Wait for all the children to finish
+
+    #ifdef DEBUG
+    printf("All children finished\n");
+    #endif
+
+    #ifdef DEBUG
+    printf("END: Executing line...\n");
+    printf("***********************\n\n");
+    #endif
+}
+
+
+/*
+** Forks a new process and execs the command
+** making sure all file descriptors are set up correctly.
+**
+** The following code was adapted from pseudocode Aided with basic GitHub coding tools.
+** This is the link to prompt #3: 
+** https://docs.google.com/document/d/1Z8r5L1gA5MtiVTdLJAWj3TX0uQaEWlSS9jbzDqdxf20/edit?usp=sharing
+** Parent process returns -1 on error.
+** Any child processes should not return.
+*/
+int run_command(Command *command){
+    if (command == NULL) { // Check if the command is NULL
+        return -1;
+    }
+
+    if (command->exec_path == NULL) { // Check if the executable path is NULL
+        return -1; 
+    }
+
+    if (command->args[0] == NULL) { // This means arguments weren't initialized properly
+        return -1; // args[0] should be the executable path
+    }
+
+    int pipe_fds[2];
+    if (command->stdout_fd != STDOUT_FILENO) {
+        // A pipe is needed if the stdout file descriptor is not STDOUT_FILENO
+        if (pipe(pipe_fds) < 0) {
+            perror("pipe");
+            return -1;
+        }
+    }
+
+    // Fork a new process
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        // Fork failed
+        perror("fork");
+        return -1;
+    } else if (pid == 0) {
+        // Child process
+
+        // Input redirection
+        if (command->redir_in_path != NULL) {
+            // Open the file for reading
+            // O_RDONLY is used to open the file for reading only
+            int in_fd = open(command->redir_in_path, O_RDONLY, 0777);
+            if (in_fd < 0) {
+                perror("open");
+                exit(EXIT_FAILURE);
+            }
+
+            // Redirect stdin to the file
+            if (dup2(in_fd, STDIN_FILENO) < 0) {
+                perror("dup2");
+                if (close(in_fd) < 0) {
+                    perror("close");
+                }
+                exit(EXIT_FAILURE);
+            }
+
+            // Close the file descriptor
+            if (close(in_fd) < 0) {
+                perror("close");
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        // Output redirection
+        if (command->redir_out_path != NULL) {
+            int flags = O_WRONLY | O_CREAT; // Default flags
+            // O_WRONGLY is used to open the file for writing only
+            // O_CREAT is used to create the file if it does not exist
+            if (command->redir_append) {
+                flags |= O_APPEND; // Append to the file if it exists
+            } else {
+                flags |= O_TRUNC; // Truncate the file if it exists
+            }
+
+            // Open the file for writing
+            int out_fd = open(command->redir_out_path, flags, 0777);
+            // 0777 is the permission mode for the file
+            if (out_fd < 0) {
+                perror("open");
+                exit(EXIT_FAILURE);
+            }
+
+            // Redirect stdout to the file
+            if (dup2(out_fd, STDOUT_FILENO) < 0) {
+                perror("dup2");
+                if (close(out_fd) < 0) {
+                    perror("close");
+                }
+                exit(EXIT_FAILURE);
+            }
+
+            if (close(out_fd) < 0) {
+                perror("close");
+                exit(EXIT_FAILURE);
+            }
+
+        // If stdout_fd is not STDOUT_FILENO, output needs to go to a pipe
+        } else if (command->stdout_fd != STDOUT_FILENO) {
+            // Output needs to go to a pipe
+            if (close(pipe_fds[0]) < 0) {
+                perror("close");
+                exit(EXIT_FAILURE);
+            } // Close unused read end
+
+            if (dup2(pipe_fds[1], STDOUT_FILENO) < 0) {
+                perror("dup2");
+                if (close(pipe_fds[1]) < 0) {
+                    perror("close");
+                }
+                exit(EXIT_FAILURE);
+            }
+
+            if (close(pipe_fds[1]) < 0) {
+                perror("close");
+                exit(EXIT_FAILURE);
+            }
+
+        } else if (command->stdin_fd != STDIN_FILENO) {
+            // Input needs to come from a pipe
+            if (close(pipe_fds[1]) < 0) {
+                perror("close");
+                exit(EXIT_FAILURE);
+            } // Close unused write end
+
+            if (dup2(command->stdin_fd, STDIN_FILENO) < 0) {
+                perror("dup2");
+                if (close(command->stdin_fd) < 0) {
+                    perror("close");
+                }
+                exit(EXIT_FAILURE);
+            }
+
+            if (close(command->stdin_fd) < 0) {
+                perror("close");
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        // Execute the command using execv
+        execv(command->exec_path, command->args);
+        
+        // execv only returns if an error occurred
+        perror("execv");
+        exit(EXIT_FAILURE);
+   
+    } else {
+        // Parent process
+        if (command->stdout_fd != STDOUT_FILENO) {
+            if (close(pipe_fds[1]) < 0) {
+                perror("close");
+                return -1;
+            } // Close unused write end
+            command->stdin_fd = pipe_fds[0]; // Next command reads from here
+        }
+        return pid; // Return child's PID to the caller
+    }
+
+    #ifdef DEBUG
+    printf("Running command: %s\n", command->exec_path);
+    printf("Argvs: ");
+    if (command->args == NULL){
+        printf("NULL\n");
+    }
+    else if (command->args[0] == NULL){
+        printf("Empty\n");
+    }
+    else {
+        for (int i=0; command->args[i] != NULL; i++){
+            printf("%d: [%s] ", i+1, command->args[i]);
+        }
+    }
+    printf("\n");
+    printf("Redir out: %s\n Redir in: %s\n",
+           command->redir_out_path, command->redir_in_path);
+    printf("Stdin fd: %d | Stdout fd: %d\n",
+           command->stdin_fd, command->stdout_fd);
+    #endif
+
+
+    #ifdef DEBUG
+    printf("Parent process created child PID [%d] for %s\n", pid, command->exec_path);
+    #endif
+}
+
+/*
+** Executes an entire script line-by-line.
+** Stops and indicates an error as soon as any line fails.
+** The following function was adapted from the run_interactive function in cscshell.c
+** Returns 0 on success, -1 on error
+*/
+
+int run_script(char *file_path, Variable **root) {
+    // Open the file
+    FILE *file = fopen(file_path, "r");
+    if (file == NULL) {
+        return -1; // Error opening the file
+    }
+
+    char *line = NULL;
+    size_t len = 0;
+    ssize_t read;
+
+    // Read the file line by line
+    while ((read = getline(&line, &len, file)) != -1) {
+        line[strlen(line) - 1] = '\0';
+
+        Command *command = parse_line(line, root);
+        if (command == (Command *) -1){
+            ERR_PRINT(ERR_PARSING_LINE);
+            continue;
+        }
+        if (command == NULL) continue;
+
+        // Execute the command
+        int *status_ptr = execute_line(command);
+        if (status_ptr == (int *) -1) {
+            // Free resources and return -1 if an error occurred
+            free_command(command);
+            free(line);
+            fclose(file);
+            ERR_PRINT(ERR_EXECUTE_LINE);
+            return -1;
+        }
+
+        // Check the status of the executed command
+        int status = *status_ptr;
+        if (status != 0) {
+            free_command(command);
+            free(line);
+            fclose(file);
+            ERR_PRINT(ERR_EXECUTE_LINE);
+            return -1;  // Stop and return -1 as soon as any line fails
+        }
+
+        free_command(command);
+    }
+
+    free(line);
+    fclose(file);
+    return 0;
+}
+
+void free_command(Command *command) {
+    if (command == NULL) {
+        return;
+    }
+
+    // Free the executable path if it's dynamically allocated
+    if (command->exec_path != NULL) {
+        free(command->exec_path);
+    }
+
+    // Free input redirection path if present
+    if (command->redir_in_path != NULL) {
+        free(command->redir_in_path);
+    }
+
+    // Free output redirection path if present
+    if (command->redir_out_path != NULL) {
+        free(command->redir_out_path);
+    }
+
+    // Free each argument in the args array
+    if (command->args != NULL) {
+        for (int i = 0; command->args[i] != NULL; i++) {
+            free(command->args[i]);
+        }
+        // Free the args array itself
+        free(command->args);
+    }
+
+    // Finally, free the command itself
+    free(command);
+}

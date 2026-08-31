@@ -1,0 +1,1 @@
+There is no function in the uploaded file to extract. The file only contains a default export of an object with item attributes. If you want, I can help you create a function based on this data.

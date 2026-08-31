@@ -1,0 +1,1 @@
+There is no function defined in the provided file except the call to the setup() function, which is not a user-defined function but a function call from setuptools. Since there is no other function to extract, I cannot extract a random function from this file. If you have another file with function definitions, please upload it.

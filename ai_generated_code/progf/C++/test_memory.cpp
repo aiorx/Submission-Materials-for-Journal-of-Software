@@ -1,0 +1,173 @@
+#include <tinystl/memory.h>
+#include <catch2/catch_all.hpp>
+
+/*
+ * WARN: this test is generated Supported by standard GitHub tools.
+ */
+
+using namespace tinystl;
+TEST_CASE("Unique Ptr Tests", "[memory]") {
+    SECTION("Default constructor") {
+        unique_ptr<int> ptr;
+        REQUIRE(ptr.get() == nullptr);
+    }
+
+    SECTION("Constructor with raw pointer") {
+        int* rawPtr = new int(42);
+        unique_ptr<int> ptr(rawPtr);
+        REQUIRE(ptr.get() == rawPtr);
+    }
+
+    SECTION("Move constructor") {
+        unique_ptr<int> ptr1(new int(42));
+        unique_ptr<int> ptr2(std::move(ptr1));
+        REQUIRE(ptr1.get() == nullptr);
+        REQUIRE(*ptr2 == 42);
+    }
+
+    SECTION("Move assignment operator") {
+        unique_ptr<int> ptr1(new int(42));
+        unique_ptr<int> ptr2;
+        ptr2 = std::move(ptr1);
+        REQUIRE(ptr1.get() == nullptr);
+        REQUIRE(*ptr2 == 42);
+    }
+
+    SECTION("Reset") {
+        unique_ptr<int> ptr(new int(42));
+        ptr.reset();
+        REQUIRE(ptr.get() == nullptr);
+    }
+
+    SECTION("Reset with raw pointer") {
+        unique_ptr<int> ptr(new int(42));
+        int* rawPtr = new int(24);
+        ptr.reset(rawPtr);
+        REQUIRE(ptr.get() == rawPtr);
+    }
+
+    SECTION("Release") {
+        unique_ptr<int> ptr(new int(42));
+        int* rawPtr = ptr.release();
+        REQUIRE(ptr.get() == nullptr);
+        REQUIRE(*rawPtr == 42);
+        delete rawPtr;
+    }
+
+    SECTION("Make unique") {
+        auto ptr = make_unique<int>(42);
+        REQUIRE(*ptr == 42);
+    }
+}
+
+TEST_CASE("Shared Ptr Tests") {
+    SECTION("Default constructor") {
+        shared_ptr<int> ptr;
+        REQUIRE(ptr.get() == nullptr);
+    }
+
+    SECTION("Constructor with raw pointer") {
+        int* rawPtr = new int(42);
+        shared_ptr<int> ptr(rawPtr);
+        REQUIRE(ptr.get() == rawPtr);
+        REQUIRE(ptr.use_count() == 1);
+    }
+
+    SECTION("Copy constructor") {
+        shared_ptr<int> ptr1(new int(42));
+        shared_ptr<int> ptr2(ptr1);
+        REQUIRE(ptr1.get() == ptr2.get());
+        REQUIRE(ptr1.use_count() == 2);
+        REQUIRE(ptr2.use_count() == 2);
+    }
+
+    SECTION("Copy assignment operator") {
+        shared_ptr<int> ptr1(new int(42));
+        shared_ptr<int> ptr2;
+        ptr2 = ptr1;
+        REQUIRE(ptr1.get() == ptr2.get());
+        REQUIRE(ptr1.use_count() == 2);
+        REQUIRE(ptr2.use_count() == 2);
+    }
+
+    SECTION("Move constructor") {
+        shared_ptr<int> ptr1(new int(42));
+        shared_ptr<int> ptr2(std::move(ptr1));
+        REQUIRE(ptr1.get() == nullptr);
+        REQUIRE(ptr2.use_count() == 1);
+        REQUIRE(*ptr2 == 42);
+    }
+
+    SECTION("Move assignment operator") {
+        shared_ptr<int> ptr1(new int(42));
+        shared_ptr<int> ptr2;
+        ptr2 = std::move(ptr1);
+        REQUIRE(ptr1.get() == nullptr);
+        REQUIRE(ptr2.use_count() == 1);
+        REQUIRE(*ptr2 == 42);
+    }
+
+    SECTION("Reset") {
+        shared_ptr<int> ptr(new int(42));
+        ptr.reset();
+        REQUIRE(ptr.get() == nullptr);
+    }
+
+    SECTION("Reset with raw pointer") {
+        shared_ptr<int> ptr(new int(42));
+        int* rawPtr = new int(24);
+        ptr.reset(rawPtr);
+        REQUIRE(ptr.get() == rawPtr);
+    }
+
+    SECTION("Use count") {
+        shared_ptr<int> ptr1(new int(42));
+        shared_ptr<int> ptr2(ptr1);
+        shared_ptr<int> ptr3(ptr1);
+        REQUIRE(ptr1.use_count() == 3);
+        REQUIRE(ptr2.use_count() == 3);
+        REQUIRE(ptr3.use_count() == 3);
+    }
+
+    SECTION("Make shared") {
+        auto ptr = std::make_shared<int>(42);
+        REQUIRE(*ptr == 42);
+        REQUIRE(ptr.use_count() == 1);
+    }
+
+    SECTION("Weak Ptr") {
+        shared_ptr<int> sharedPtr(new int(42));
+        weak_ptr<int> weakPtr(sharedPtr);
+
+        SECTION("Expired") {
+            REQUIRE_FALSE(weakPtr.expired());
+            sharedPtr.reset();
+            REQUIRE(weakPtr.expired());
+        }
+
+        SECTION("Lock") {
+            auto lockedPtr = weakPtr.lock();
+            REQUIRE(lockedPtr.get() != nullptr);
+            REQUIRE(*lockedPtr == 42);
+            sharedPtr.reset();
+            REQUIRE(lockedPtr.get() != nullptr);
+        }
+
+        SECTION("Swap") {
+            shared_ptr<int> ptr1(new int(42));
+            shared_ptr<int> ptr2(new int(24));
+            REQUIRE(ptr1.get() != ptr2.get());
+            REQUIRE(ptr1.use_count() == 1);
+            REQUIRE(ptr2.use_count() == 1);
+
+            ptr1.swap(ptr2);
+
+            REQUIRE(ptr1.get() != ptr2.get());
+            REQUIRE(ptr1.use_count() == 1);
+            REQUIRE(ptr2.use_count() == 1);
+            REQUIRE(*ptr1 == 24);
+            REQUIRE(*ptr2 == 42);
+        }
+    }
+
+}

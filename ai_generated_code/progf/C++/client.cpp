@@ -1,0 +1,280 @@
+#include <iostream>
+#include <cstring>
+#include <cstdlib>
+#include <thread>
+#include <atomic>
+#include <signal.h>
+#include <unistd.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <termios.h>
+#include <sys/ioctl.h>
+#include <mutex>
+
+// global flag to control thread termination
+std::atomic<bool> running(true);
+std::mutex displayMutex;
+std::string currentInput;
+bool inputMode = false;
+std::string myUsername;
+
+// some terminal control functions Aided using common development resources
+void clearCurrentLine()
+{
+  std::cout << "\033[2K\r" << std::flush;
+}
+
+void moveCursorUp(int lines)
+{
+  std::cout << "\033[" << lines << "A" << std::flush;
+}
+
+void saveCursorPosition()
+{
+  std::cout << "\033[s" << std::flush;
+}
+
+void restoreCursorPosition()
+{
+  std::cout << "\033[u" << std::flush;
+}
+
+void displayInputPrompt()
+{
+  std::cout << "> " << std::flush;
+}
+
+void redrawInputLine()
+{
+  clearCurrentLine();
+  displayInputPrompt();
+}
+
+int createClientSocket(const char *ip, int port)
+{
+  // similar to server socket creation, but using the connect function
+  int client_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (client_fd < 0)
+  {
+    perror("socket failed");
+    exit(EXIT_FAILURE);
+  }
+
+  struct sockaddr_in server_addr;
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_port = htons(port);
+
+  // converting ipv4 to binary
+  if (inet_pton(AF_INET, ip, &server_addr.sin_addr) <= 0)
+  {
+    perror("invalid address");
+    exit(EXIT_FAILURE);
+  }
+
+  // connection!
+  if (connect(client_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+  {
+    perror("connect failed");
+    close(client_fd);
+    exit(EXIT_FAILURE);
+  }
+
+  return client_fd;
+}
+
+int sendMessage(int client_fd, const std::string &message)
+{
+  ssize_t bytes_sent = send(client_fd, message.c_str(), message.size(), 0);
+  if (bytes_sent < 0)
+  {
+    perror("send failed");
+    return -1;
+  }
+  return bytes_sent;
+}
+
+int receiveMessage(int client_fd, char *buffer, size_t buffer_size)
+{
+  ssize_t bytes_received = recv(client_fd, buffer, buffer_size - 1, 0);
+  if (bytes_received < 0)
+  {
+    perror("recv failed");
+    return -1;
+  }
+  if (bytes_received == 0)
+  {
+    // connection closed by server
+    return 0;
+  }
+  buffer[bytes_received] = '\0';
+  return bytes_received;
+}
+
+void sendThread(int client_fd)
+{
+  // display initial prompt
+  {
+    std::lock_guard<std::mutex> lock(displayMutex);
+    displayInputPrompt();
+  }
+
+  while (running)
+  {
+    std::string message;
+    std::getline(std::cin, message);
+
+    if (!running)
+      break;
+
+    if (message.empty())
+    {
+      std::lock_guard<std::mutex> lock(displayMutex);
+      displayInputPrompt();
+      continue;
+    }
+
+    if (message == "/quit" || message == "/exit")
+    {
+      running = false;
+      break;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(displayMutex);
+      moveCursorUp(1);
+      clearCurrentLine();
+      std::cout << "you: " << message << std::endl;
+      displayInputPrompt();
+    }
+
+    message += "\n";
+
+    if (sendMessage(client_fd, message) < 0)
+    {
+      std::cerr << "failed to send message" << std::endl;
+      running = false;
+      break;
+    }
+  }
+}
+
+void receiveThread(int client_fd)
+{
+  char buffer[1024];
+  while (running)
+  {
+    int result = receiveMessage(client_fd, buffer, sizeof(buffer));
+    if (result < 0)
+    {
+      std::cerr << "failed to receive message" << std::endl;
+      running = false;
+      break;
+    }
+    if (result == 0)
+    {
+      std::cout << "server disconnected" << std::endl;
+      running = false;
+      break;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(displayMutex);
+      // clear the current input line
+      clearCurrentLine();
+
+      // display the received message
+      std::cout << buffer;
+      if (buffer[strlen(buffer) - 1] != '\n')
+      {
+        std::cout << std::endl;
+      }
+
+      // redraw the input prompt
+      displayInputPrompt();
+    }
+  }
+}
+
+int main(int argc, char *argv[])
+{
+  // default values
+  const char *server_ip = "127.0.0.1";
+  int server_port = 12345;
+
+  // parse command line arguments
+  if (argc >= 2)
+  {
+    server_ip = argv[1];
+  }
+  if (argc >= 3)
+  {
+    server_port = std::atoi(argv[2]);
+    if (server_port <= 0 || server_port > 65535)
+    {
+      std::cerr << "Error: Invalid port number. Port must be between 1 and 65535." << std::endl;
+      return -1;
+    }
+  }
+  if (argc > 3)
+  {
+    std::cout << "Usage: " << argv[0] << " [server_ip] [port]" << std::endl;
+    std::cout << "  server_ip: IP address of the server (default: 127.0.0.1)" << std::endl;
+    std::cout << "  port: Port number (default: 12345)" << std::endl;
+    return -1;
+  }
+
+  std::cout << "=== chatroom client ===" << std::endl;
+  std::cout << "connecting to " << server_ip << ":" << server_port << "..." << std::endl;
+
+  int client_fd = createClientSocket(server_ip, server_port);
+  if (client_fd < 0)
+  {
+    return -1;
+  }
+
+  std::cout << "connected to server!" << std::endl;
+
+  // handle username prompt
+  char buffer[1024];
+  int result = receiveMessage(client_fd, buffer, sizeof(buffer));
+  if (result > 0)
+  {
+    std::cout << buffer << std::flush;
+    std::string username;
+    std::getline(std::cin, username);
+    myUsername = username;
+    username += "\n";
+    sendMessage(client_fd, username);
+
+    // wait for server response (welcome message or error)
+    result = receiveMessage(client_fd, buffer, sizeof(buffer));
+    if (result > 0)
+    {
+      std::cout << buffer;
+      if (strstr(buffer, "already taken") != nullptr)
+      {
+        close(client_fd);
+        return -1;
+      }
+    }
+  }
+
+  std::cout << "\n=== welcome to the chatroom ===" << std::endl;
+  std::cout << "type your messages below. Use /quit or /exit to leave" << std::endl;
+  std::cout << "=====================================\n"
+            << std::endl;
+
+  std::thread send_thread(sendThread, client_fd);
+  std::thread receive_thread(receiveThread, client_fd);
+
+  send_thread.join();
+  receive_thread.join();
+
+  close(client_fd);
+
+  std::cout << std::endl;
+  std::cout << "disconnected from server. goodbye" << std::endl;
+
+  return 0;
+}

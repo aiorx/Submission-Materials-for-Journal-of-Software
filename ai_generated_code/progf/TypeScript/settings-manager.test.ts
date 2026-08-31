@@ -1,0 +1,597 @@
+// Assisted using common GitHub development utilities
+// Consolidated Settings Manager Tests - Comprehensive functionality testing
+// Combines settings-manager.test.ts and settings-manager-extended.test.ts
+// Removes duplicates and improves test organization
+
+import { SettingsManager } from '../../utils/settings-manager';
+import { cleanupTest, mockChromeAPIs } from '../test-helpers';
+
+// Mock the logger module to always return the same mock instance
+// We need to define the mock instance inside the factory to avoid hoisting issues
+jest.mock('../../utils/logger', () => {
+  const mockLogger = {
+    warn: jest.fn(),
+    error: jest.fn(),
+    info: jest.fn(),
+    debug: jest.fn(),
+    trace: jest.fn(),
+    enabled: true,
+    level: 1,
+    component: 'SettingsManager',
+  };
+
+  return {
+    createLogger: jest.fn(() => mockLogger),
+  };
+});
+
+describe('III. - SettingsManager - Comprehensive Functionality', () => {
+  let manager: SettingsManager;
+  let mockChrome: any;
+  let mockLogger: any;
+
+  beforeEach(() => {
+    mockChrome = mockChromeAPIs();
+    (global as any).chrome = mockChrome;
+    manager = new SettingsManager();
+
+    // Get the mocked logger instance from the mocked module
+    const { createLogger } = require('../../utils/logger');
+    mockLogger = createLogger();
+
+    // Reset all mocks including the logger
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanupTest();
+  });
+
+  describe('III.1 - Schema and Defaults', () => {
+    test('III.1.1 - Should have default values for all schema fields', async () => {
+      const defaults = await manager.getDefaults();
+
+      // Verify the actual schema-based defaults
+      expect(defaults).toEqual({
+        githubToken: '',
+        githubRepo: '',
+        defaultFolder: 'unsorted',
+        customFolder: '',
+        fileNamingPattern: 'YYYY-MM-DD-domain-title',
+        autoCommit: true,
+        captureImages: true,
+        removeAds: true,
+        removeNavigation: true,
+        customSelectors: '',
+        commitMessageTemplate: 'Add: {domain} - {title}',
+        debugMode: false,
+        showNotifications: true,
+        enableKeyboardShortcuts: true,
+        // Bookmarklet defaults
+        'bookmarklet.enabled': false,
+        'bookmarklet.customDomain': '',
+        'bookmarklet.includeImages': true,
+        'bookmarklet.includeLinks': true,
+        'bookmarklet.cleanAds': true,
+        'bookmarklet.customSelectors': [],
+        'bookmarklet.excludeSelectors': ['nav', 'header', 'footer', '.advertisement', '.ad'],
+        'bookmarklet.autoInstall': false,
+        'bookmarklet.version': '1.0.0',
+      });
+
+      // Verify all required fields are present
+      expect(defaults).toHaveProperty('githubToken');
+      expect(defaults).toHaveProperty('githubRepo');
+      expect(defaults).toHaveProperty('defaultFolder');
+      expect(defaults).toHaveProperty('autoCommit');
+    });
+
+    test('III.1.2 - Should get setting definition by key', () => {
+      const githubTokenDef = manager.getSettingDefinition('githubToken');
+      expect(githubTokenDef).toBeDefined();
+      expect(githubTokenDef?.type).toBe('string');
+      expect(githubTokenDef?.sensitive).toBe(true);
+      expect(githubTokenDef?.description).toContain('GitHub');
+      expect(githubTokenDef?.default).toBe('');
+
+      const repoDef = manager.getSettingDefinition('githubRepo');
+      expect(repoDef).toBeDefined();
+      expect(repoDef?.type).toBe('string');
+      expect(repoDef?.pattern).toBeDefined();
+      expect(repoDef?.description).toContain('repository');
+
+      // Test non-existent setting
+      const nonExistent = manager.getSettingDefinition('nonExistentSetting');
+      expect(nonExistent).toBeNull();
+    });
+
+    test('III.1.3 - Should get all setting definitions', () => {
+      const allDefinitions = manager.getAllSettingDefinitions();
+
+      // Verify structure
+      expect(typeof allDefinitions).toBe('object');
+      expect(allDefinitions).not.toBeNull();
+
+      // Check for expected keys
+      const expectedKeys = [
+        'githubToken',
+        'githubRepo',
+        'defaultFolder',
+        'customFolder',
+        'fileNamingPattern',
+        'autoCommit',
+        'captureImages',
+        'removeAds',
+        'removeNavigation',
+        'customSelectors',
+        'commitMessageTemplate',
+        'debugMode',
+        'showNotifications',
+        'enableKeyboardShortcuts',
+      ];
+
+      expectedKeys.forEach(key => {
+        expect(allDefinitions).toHaveProperty(key);
+        expect(allDefinitions[key]).toHaveProperty('type');
+        expect(allDefinitions[key]).toHaveProperty('default');
+        expect(allDefinitions[key]).toHaveProperty('description');
+      });
+
+      // Verify schema is a copy (not reference to internal schema)
+      const originalCount = Object.keys(allDefinitions).length;
+      delete allDefinitions.githubToken;
+      const newDefinitions = manager.getAllSettingDefinitions();
+      expect(Object.keys(newDefinitions).length).toBe(originalCount);
+    });
+
+    test('III.1.4 - Should check required dependencies', async () => {
+      // Test settings without dependencies
+      const simpleSettings = {
+        githubToken: 'test-token',
+        autoCommit: true,
+      };
+
+      const noDependencies = await manager.checkRequiredDependencies(simpleSettings);
+      expect(Array.isArray(noDependencies)).toBe(true);
+
+      // Test with null/undefined values
+      const settingsWithNulls: any = {
+        defaultFolder: null,
+        customFolder: '',
+        githubToken: undefined,
+      };
+
+      const nullDependencies = await manager.checkRequiredDependencies(settingsWithNulls);
+      expect(Array.isArray(nullDependencies)).toBe(true);
+    });
+  });
+
+  describe('III.2 - Settings Load/Save Operations', () => {
+    test('III.2.1 - Should load settings when storage is empty', async () => {
+      mockChrome.storage.sync.get.mockImplementation((keys: any, callback: any) => {
+        callback({});
+      });
+
+      const settings = await manager.getSettings();
+      expect(settings).toEqual({});
+      expect(mockChrome.storage.sync.get).toHaveBeenCalledWith(
+        ['prismWeaveSettings'],
+        expect.any(Function)
+      );
+    });
+
+    test('III.2.2 - Should save valid settings successfully', async () => {
+      mockChrome.storage.sync.get.mockImplementation((keys: any, callback: any) => {
+        callback({});
+      });
+      mockChrome.storage.sync.set.mockImplementation((data: any, callback: any) => {
+        callback();
+      });
+
+      // Use only valid schema fields
+      const testSettings = {
+        autoCommit: false,
+        defaultFolder: 'tech',
+        captureImages: false,
+        githubRepo: 'user/repo',
+        debugMode: true,
+      };
+
+      const result = await manager.updateSettings(testSettings);
+      expect(result).toBe(true);
+      expect(mockChrome.storage.sync.set).toHaveBeenCalledWith(
+        { prismWeaveSettings: expect.objectContaining(testSettings) },
+        expect.any(Function)
+      );
+    });
+
+    test('III.2.3 - Should reset settings to defaults', async () => {
+      mockChrome.storage.sync.set.mockImplementation((data: any, callback: any) => {
+        callback();
+      });
+
+      const result = await manager.resetSettings();
+      expect(result).toBe(true);
+
+      const defaults = await manager.getDefaults();
+      expect(mockChrome.storage.sync.set).toHaveBeenCalledWith(
+        { prismWeaveSettings: defaults },
+        expect.any(Function)
+      );
+    });
+  });
+
+  describe('III.3 - Settings Validation', () => {
+    test('III.3.1 - Should validate settings with correct types', () => {
+      // Use only valid schema fields
+      const validSettings = {
+        autoCommit: true,
+        defaultFolder: 'tech',
+        githubRepo: 'owner/repo',
+        captureImages: false,
+        debugMode: true,
+        githubToken: 'valid-token',
+      };
+
+      const validation = manager.validateSettings(validSettings);
+      expect(validation.isValid).toBe(true);
+      expect(validation.errors).toEqual([]);
+    });
+
+    test('III.3.2 - Should validate settings with incorrect types', () => {
+      const invalidSettings = {
+        autoCommit: 'yes', // should be boolean
+        githubRepo: 'invalid-format', // should match pattern
+      };
+
+      const validation = manager.validateSettings(invalidSettings as any);
+      expect(validation.isValid).toBe(false);
+      expect(validation.errors.length).toBeGreaterThan(0);
+    });
+
+    test('III.3.3 - Should validate GitHub repository pattern', () => {
+      // Test valid repository patterns
+      const validRepoSettings = {
+        githubRepo: 'user/repository-name',
+      };
+      const validResult = manager.validateSettings(validRepoSettings);
+      expect(validResult.isValid).toBe(true);
+      expect(validResult.errors).toEqual([]);
+
+      // Test invalid repository patterns
+      const invalidRepoFormats = [
+        { githubRepo: 'invalid-format' },
+        { githubRepo: 'user/' },
+        { githubRepo: '/repository' },
+        { githubRepo: 'user space/repo' },
+        { githubRepo: 'user/repo/extra' },
+      ];
+
+      invalidRepoFormats.forEach(settings => {
+        const result = manager.validateSettings(settings);
+        expect(result.isValid).toBe(false);
+        expect(result.errors.some(error => error.includes('pattern'))).toBe(true);
+      });
+
+      // Test empty string (should be valid for optional fields)
+      const emptyRepoSettings = { githubRepo: '' };
+      const emptyResult = manager.validateSettings(emptyRepoSettings);
+      expect(emptyResult.isValid).toBe(true);
+    });
+
+    test('III.3.4 - Should validate enum options correctly', () => {
+      // Test valid defaultFolder options
+      const validFolderOptions = [
+        'tech',
+        'business',
+        'research',
+        'news',
+        'tutorial',
+        'reference',
+        'blog',
+        'social',
+        'unsorted',
+        'custom',
+      ];
+
+      validFolderOptions.forEach(folder => {
+        const settings = { defaultFolder: folder };
+        const result = manager.validateSettings(settings);
+        expect(result.isValid).toBe(true);
+      });
+
+      // Test invalid defaultFolder options
+      const invalidFolderOptions = ['invalid-folder', 'random', 'documents', 'downloads'];
+
+      invalidFolderOptions.forEach(folder => {
+        const settings = { defaultFolder: folder };
+        const result = manager.validateSettings(settings);
+        expect(result.isValid).toBe(false);
+        expect(result.errors.some(error => error.includes('must be one of'))).toBe(true);
+      });
+    });
+
+    test('III.3.5 - Should perform cross-field validation', () => {
+      // Test multiple field validation simultaneously
+      const multiFieldSettings = {
+        githubToken: 'valid-token',
+        githubRepo: 'user/repo',
+        defaultFolder: 'tech',
+        autoCommit: true,
+        captureImages: false,
+      };
+
+      const validResult = manager.validateSettings(multiFieldSettings);
+      expect(validResult.isValid).toBe(true);
+      expect(validResult.errors).toEqual([]);
+
+      // Test multiple validation failures
+      const multipleErrorSettings: any = {
+        githubToken: 123, // Wrong type
+        githubRepo: 'invalid format', // Wrong pattern
+        defaultFolder: 'invalid-folder', // Wrong enum
+        autoCommit: 'yes', // Wrong type
+        captureImages: 'true', // Wrong type
+      };
+
+      const invalidResult = manager.validateSettings(multipleErrorSettings);
+      expect(invalidResult.isValid).toBe(false);
+      expect(invalidResult.errors.length).toBeGreaterThan(4); // Should have multiple errors
+
+      // Check that each type of error is present
+      const errorString = invalidResult.errors.join(' ');
+      expect(errorString).toContain('Invalid type');
+      expect(errorString).toContain('pattern');
+      expect(errorString).toContain('must be one of');
+    });
+
+    test('III.3.6 - Should validate on load and warn about invalid data', async () => {
+      mockChrome.storage.sync.get.mockImplementation((keys: any, callback: any) => {
+        callback({
+          prismWeaveSettings: {
+            githubToken: 12345, // should be string
+            githubRepo: 'invalid repo format', // should match pattern
+            defaultFolder: 'not-a-valid-folder', // not in options
+            autoCommit: 'yes', // should be boolean
+          },
+        });
+      });
+
+      // Test validates that logger.warn is called with validation errors
+      const settings = await manager.getSettings();
+      expect(settings).toEqual({
+        githubToken: 12345,
+        githubRepo: 'invalid repo format',
+        defaultFolder: 'not-a-valid-folder',
+        autoCommit: 'yes',
+      });
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'Settings validation failed:',
+        expect.arrayContaining([
+          expect.stringContaining('Invalid type for githubToken'),
+          expect.stringContaining('Invalid format for githubRepo'),
+          expect.stringContaining('Invalid value for defaultFolder'),
+          expect.stringContaining('Invalid type for autoCommit'),
+        ])
+      );
+    });
+  });
+
+  describe('III.4 - Import/Export Operations', () => {
+    test('III.4.1 - Should export settings with sensitive data sanitized', async () => {
+      // Use valid schema fields
+      const testSettings = {
+        githubToken: 'secret-token',
+        autoCommit: true,
+        defaultFolder: 'tech',
+        captureImages: false,
+        debugMode: true,
+      };
+
+      mockChrome.storage.sync.get.mockImplementation((keys: any, callback: any) => {
+        callback({
+          prismWeaveSettings: testSettings,
+        });
+      });
+
+      const exported = await manager.exportSettings();
+      const parsed = JSON.parse(exported);
+
+      expect(parsed.githubToken).toBe('[REDACTED]');
+      expect(parsed.autoCommit).toBe(true);
+      expect(parsed.defaultFolder).toBe('tech');
+    });
+
+    test('III.4.2 - Should import settings successfully', async () => {
+      mockChrome.storage.sync.get.mockImplementation((keys: any, callback: any) => {
+        callback({}); // Return empty settings for current state
+      });
+      mockChrome.storage.sync.set.mockImplementation((data: any, callback: any) => {
+        callback();
+      });
+
+      // Use valid schema fields
+      const importSettings = {
+        autoCommit: false,
+        defaultFolder: 'business',
+        captureImages: true,
+        githubRepo: 'user/repo',
+        debugMode: false,
+      };
+
+      const importData = JSON.stringify(importSettings);
+
+      const result = await manager.importSettings(importData);
+      expect(result).toBe(true);
+    });
+
+    test('III.4.3 - Should handle invalid JSON import gracefully', async () => {
+      const invalidJson = '{ invalid json }';
+
+      const result = await manager.importSettings(invalidJson);
+      expect(result).toBe(false);
+
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        'Error importing settings:',
+        expect.any(SyntaxError)
+      );
+    });
+  });
+
+  describe('III.5 - Error Handling and Edge Cases', () => {
+    test('III.5.1 - Should handle storage errors gracefully', async () => {
+      mockChrome.runtime.lastError = { message: 'Storage quota exceeded' };
+      mockChrome.storage.sync.get.mockImplementation((keys: any, callback: any) => {
+        callback({});
+      });
+
+      const settings = await manager.getSettings();
+      expect(settings).toEqual({});
+
+      expect(mockLogger.error).toHaveBeenCalledWith('Error getting settings:', expect.any(Error));
+
+      mockChrome.runtime.lastError = null;
+    });
+
+    test('III.5.2 - Should handle Chrome storage unavailable', async () => {
+      // Simulate Chrome storage API not available
+      (global as any).chrome = undefined;
+
+      const settings = await manager.getSettings();
+      expect(settings).toEqual({});
+
+      const updateResult = await manager.updateSettings({ autoCommit: true });
+      expect(updateResult).toBe(false);
+
+      const resetResult = await manager.resetSettings();
+      expect(resetResult).toBe(false);
+
+      // Test partial Chrome API availability
+      (global as any).chrome = { runtime: {} }; // Missing storage
+      const partialSettings = await manager.getSettings();
+      expect(partialSettings).toEqual({});
+    });
+
+    test('III.5.3 - Should handle storage corruption', async () => {
+      // Test invalid JSON structure in storage
+      mockChrome.storage.sync.get.mockImplementation((keys: any, callback: any) => {
+        callback({
+          prismWeaveSettings: 'invalid-json-string-that-parsed-somehow',
+        });
+      });
+
+      const corruptedSettings = await manager.getSettings();
+      expect(corruptedSettings).toEqual('invalid-json-string-that-parsed-somehow');
+
+      // Test storage returns null/undefined
+      mockChrome.storage.sync.get.mockImplementation((keys: any, callback: any) => {
+        callback(null);
+      });
+
+      const nullSettings = await manager.getSettings();
+      expect(nullSettings).toEqual({});
+
+      // Test storage throws error during get operation
+      mockChrome.storage.sync.get.mockImplementation((keys: any, callback: any) => {
+        mockChrome.runtime.lastError = { message: 'Storage corrupted' };
+        callback({});
+      });
+
+      const errorSettings = await manager.getSettings();
+      expect(errorSettings).toEqual({});
+
+      mockChrome.runtime.lastError = null;
+    });
+
+    test('III.5.4 - Should handle large data storage', async () => {
+      // Create large settings object to test storage limits
+      const largeSettings = {
+        githubToken: 'a'.repeat(100),
+        customSelectors: 'selector1,'.repeat(50) + 'selector2',
+        commitMessageTemplate: 'X'.repeat(100),
+        githubRepo: 'user/repository-with-very-long-name',
+        defaultFolder: 'tech',
+        autoCommit: true,
+        captureImages: false,
+      };
+
+      mockChrome.storage.sync.get.mockImplementation((keys: any, callback: any) => {
+        callback({ prismWeaveSettings: {} });
+      });
+
+      // Test successful storage of large data
+      mockChrome.storage.sync.set.mockImplementation((data: any, callback: any) => {
+        callback();
+      });
+
+      const updateResult = await manager.updateSettings(largeSettings);
+      expect(updateResult).toBe(true);
+
+      // Test storage quota exceeded error
+      mockChrome.storage.sync.set.mockImplementation((data: any, callback: any) => {
+        mockChrome.runtime.lastError = { message: 'QUOTA_BYTES quota exceeded' };
+        callback();
+      });
+
+      const quotaExceededResult = await manager.updateSettings(largeSettings);
+      expect(quotaExceededResult).toBe(false);
+
+      mockChrome.runtime.lastError = null;
+    });
+
+    test('III.5.5 - Should handle malformed data gracefully', () => {
+      // Test validation with unusual data types
+      const edgeCaseSettings: any = {
+        githubToken: null,
+        githubRepo: undefined,
+        autoCommit: 0, // Falsy but not boolean
+        defaultFolder: ['array', 'instead', 'of', 'string'],
+        captureImages: {},
+      };
+
+      const result = manager.validateSettings(edgeCaseSettings);
+      expect(result.isValid).toBe(false);
+      expect(result.errors.length).toBeGreaterThan(0);
+    });
+
+    test('III.5.6 - Should handle concurrent storage operations', async () => {
+      mockChrome.storage.sync.get.mockImplementation((keys: any, callback: any) => {
+        callback({ prismWeaveSettings: {} });
+      });
+
+      let callCount = 0;
+      mockChrome.storage.sync.set.mockImplementation((data: any, callback: any) => {
+        callCount++;
+        callback();
+      });
+
+      // Start multiple update operations simultaneously
+      const promises = [
+        manager.updateSettings({ autoCommit: true }),
+        manager.updateSettings({ captureImages: false }),
+        manager.updateSettings({ debugMode: true }),
+      ];
+
+      const results = await Promise.all(promises);
+      expect(results).toEqual([true, true, true]);
+      expect(callCount).toBe(3);
+    });
+
+    test('III.5.7 - Should preserve data integrity during partial failures', async () => {
+      // Test update with some valid and some invalid fields
+      const mixedSettings: any = {
+        githubToken: 'valid-token', // Valid
+        githubRepo: 'invalid format', // Invalid pattern
+        autoCommit: true, // Valid
+        defaultFolder: 'invalid-folder', // Invalid enum value
+      };
+
+      const result = await manager.updateSettings(mixedSettings);
+      expect(result).toBe(false); // Should fail validation
+
+      // Verify storage was not called due to validation failure
+      expect(mockChrome.storage.sync.set).not.toHaveBeenCalled();
+    });
+  });
+});

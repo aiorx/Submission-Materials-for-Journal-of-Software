@@ -1,0 +1,257 @@
+// Aided with basic GitHub coding tools
+// PrismWeave Shared Utilities
+// Common helper functions used across multiple modules
+
+import { createLogger } from './logger';
+const logger = createLogger('SharedUtils');
+
+import { getGlobalScope } from './global-types';
+
+interface IFileValidationResult {
+  valid: boolean;
+  errors: string[];
+}
+
+interface IPrismWeaveError extends Error {
+  code?: string;
+  details?: Record<string, unknown>;
+}
+
+class SharedUtils {
+  // URL validation and manipulation
+  static isValidUrl(url: string): boolean {
+    try {
+      new URL(url);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  static resolveUrl(url: string, baseUrl: string = ''): string {
+    try {
+      if (typeof window !== 'undefined' && window.location) {
+        return new URL(url, baseUrl || window.location.href).href;
+      }
+      return new URL(url, baseUrl).href;
+    } catch {
+      return url;
+    }
+  }
+
+  static isValidImageUrl(url: string): boolean {
+    const imageExtensions = /\.(jpg|jpeg|png|gif|svg|webp|bmp)(\?.*)?$/i;
+    return imageExtensions.test(url) || url.includes('image') || url.includes('img');
+  }
+
+  // Text processing utilities
+  static sanitizeForFilename(text: string | null | undefined, maxLength: number = 50): string {
+    if (!text) return 'untitled';
+
+    return text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '') // Remove special characters
+      .replace(/\s+/g, '-') // Replace spaces with hyphens
+      .replace(/-+/g, '-') // Replace multiple hyphens with single
+      .replace(/^-|-$/g, '') // Remove leading/trailing hyphens
+      .substring(0, maxLength); // Limit length
+  }
+
+  static sanitizeDomain(domain: string | null | undefined): string {
+    if (!domain) return 'unknown';
+
+    return domain
+      .toLowerCase()
+      .replace(/^www\./, '') // Remove www.
+      .replace(/[^a-z0-9.-]/g, '') // Keep only alphanumeric, dots, and hyphens
+      .substring(0, 20); // Limit length
+  }
+
+  // YAML utilities
+  static escapeYaml(str: unknown): unknown {
+    if (typeof str !== 'string') return str;
+    return str.replace(/"/g, '\\"').replace(/\n/g, '\\n');
+  }
+
+  static formatYamlValue(value: unknown): unknown {
+    if (value === null || value === undefined) return null;
+
+    if (Array.isArray(value)) {
+      if (value.length === 0) return '[]';
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      return `"${this.escapeYaml(value)}"`;
+    }
+
+    return value;
+  }
+
+  // Date utilities
+  static formatDateForFilename(date: Date = new Date()): string {
+    const d = new Date(date);
+    return (
+      d.getFullYear() +
+      '-' +
+      (d.getMonth() + 1).toString().padStart(2, '0') +
+      '-' +
+      d.getDate().toString().padStart(2, '0')
+    );
+  }
+
+  static getDateFromFilename(filename: string): Date | null {
+    const dateMatch = filename.match(/(\d{4}-\d{2}-\d{2})/);
+    return dateMatch ? new Date(dateMatch[1]) : null;
+  }
+
+  // File utilities
+  static getFileExtension(filename: string): string {
+    const match = filename.match(/\.([a-zA-Z0-9]+)$/);
+    return match ? match[1].toLowerCase() : '';
+  }
+
+  static isMarkdownFile(filename: string): boolean {
+    return this.getFileExtension(filename) === 'md';
+  }
+
+  static generateUniqueFilename(baseFilename: string, existingFiles: string[] = []): string {
+    if (!existingFiles.includes(baseFilename)) {
+      return baseFilename;
+    }
+
+    const extension = this.getFileExtension(baseFilename);
+    const nameWithoutExt = baseFilename.substring(0, baseFilename.length - extension.length - 1);
+
+    let counter = 1;
+    let newFilename: string;
+
+    do {
+      newFilename = `${nameWithoutExt}-${counter}.${extension}`;
+      counter++;
+    } while (existingFiles.includes(newFilename));
+
+    return newFilename;
+  }
+
+  static validateFilename(filename: string): IFileValidationResult {
+    const errors: string[] = [];
+
+    if (!filename) {
+      errors.push('Filename cannot be empty');
+      return { valid: false, errors };
+    }
+
+    if (filename.length > 100) {
+      errors.push('Filename too long (max 100 characters)');
+    }
+
+    if (!/\.md$/.test(filename)) {
+      errors.push('Filename must end with .md');
+    }
+
+    if (/[<>:"/\\|?*]/.test(filename)) {
+      errors.push('Filename contains invalid characters');
+    }
+
+    if (/^\s|\s$/.test(filename)) {
+      errors.push('Filename cannot start or end with whitespace');
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+    };
+  }
+
+  // Content quality assessment utilities
+  static calculateReadabilityScore(text: string, paragraphs: number, headings: number): number {
+    const wordCount = this.countWords(text);
+    const avgWordsPerParagraph = paragraphs > 0 ? wordCount / paragraphs : 0;
+
+    let score = 0;
+
+    // Word count scoring
+    if (wordCount >= 300) score += 30;
+    else if (wordCount >= 100) score += 20;
+    else if (wordCount >= 50) score += 10;
+
+    // Structure scoring
+    if (paragraphs >= 3) score += 20;
+    if (headings >= 2) score += 15;
+
+    // Readability scoring
+    if (avgWordsPerParagraph >= 20 && avgWordsPerParagraph <= 100) {
+      score += 15;
+    }
+
+    return Math.min(score, 100);
+  }
+
+  static countWords(text: string): number {
+    return text
+      .trim()
+      .split(/\s+/)
+      .filter(word => word.length > 0).length;
+  }
+  // Browser context detection
+  static isServiceWorkerContext(): boolean {
+    return typeof (globalThis as any).importScripts === 'function' && typeof window === 'undefined';
+  }
+
+  static isBrowserContext(): boolean {
+    return typeof window !== 'undefined';
+  }
+
+  // Error handling utilities
+  static createError(
+    message: string,
+    code: string = 'GENERAL_ERROR',
+    details: Record<string, unknown> = {}
+  ): IPrismWeaveError {
+    const error = new Error(message) as IPrismWeaveError;
+    error.code = code;
+    error.details = details;
+    return error;
+  }
+
+  static logError(error: Error, context: string = ''): void {
+    const timestamp = new Date().toISOString();
+    logger.error(`[PrismWeave${context ? ' ' + context : ''}] ${timestamp}:`, error);
+  }
+
+  static generateFilename(
+    title: string,
+    url: string,
+    pattern: string = 'YYYY-MM-DD-domain-title'
+  ): string {
+    // Generate filename based on pattern
+    const date = this.formatDateForFilename();
+    const domain = this.sanitizeDomain(new URL(url).hostname);
+    const sanitizedTitle = this.sanitizeForFilename(title);
+
+    // Replace pattern placeholders
+    let filename = pattern
+      .replace(/YYYY-MM-DD/g, date)
+      .replace(/domain/g, domain)
+      .replace(/title/g, sanitizedTitle);
+
+    // Ensure valid filename
+    filename = this.sanitizeForFilename(filename, 100);
+
+    return filename.endsWith('.md') ? filename : `${filename}.md`;
+  }
+}
+
+// Export to global scope using centralized approach
+const globalScope = getGlobalScope();
+if ((globalScope as any).SharedUtils === undefined) {
+  (globalScope as any).SharedUtils = {
+    isValidUrl: SharedUtils.isValidUrl.bind(SharedUtils),
+    sanitizeForFilename: SharedUtils.sanitizeForFilename.bind(SharedUtils),
+    generateFilename: SharedUtils.generateFilename.bind(SharedUtils),
+  };
+}
+
+export default SharedUtils;
+export type { IFileValidationResult, IPrismWeaveError };

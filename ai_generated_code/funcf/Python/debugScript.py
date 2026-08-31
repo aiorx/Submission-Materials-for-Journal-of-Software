@@ -1,0 +1,13 @@
+```python
+def remove_parts_of_string(*strings): #Assisted with basic coding tools
+    for string in strings:
+        # Remove all characters before the first uppercase letter
+        index = [i for i in range(len(string)) if string[i].isupper()][0]
+        string = string[index:]
+        
+        # Remove all characters before the first lowercase letter
+        index = [i for i in range(len(string)) if string[i].islower()][0]
+        string = string[index-1:]
+
+        return(string)
+```

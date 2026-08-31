@@ -1,0 +1,278 @@
+//
+// B F B S . J A V A
+//
+// Big Float Basic Statistics
+//
+// bfbs.java last updated on Fri Oct  3 20:54:48 2025 by O.H. as 0v9
+//
+
+//
+// Compile with; -
+//  javac bfbs.java
+//
+// Run with; -
+//  java bfbs data.csv
+//
+// Usage; -
+//  Usage: Usage: java bfbs [--precision=<n>] [--round=<n>] [--has-header] [--help] <file1.csv> [file2.csv] ...
+//
+
+
+//
+// Originally this code was Assisted with basic coding tools from the following prompts; -
+//
+// 1. Please write a java program that reads one or more comma separated value data files
+// containing one or more columns of numbers and calculates the min, median, max, range,
+// sum, mean, sample variance and sample standard deviation for each column using the
+// arbitrary-precision floating point arithmetic package java.math.BigDecimal and writes
+// out the results for each column in each file. Ensure that the script can handle leading
+// spaces on numbers, blank rows in files and comment lines beginning with a hash. Allow
+// the precision to be controlled by the user from the command line.
+//
+// 2. Please enhance the code to handle headers in the top of row of the CSV columns when
+// the user flags this in the command line.
+//
+// 3. yes add optional rounding
+//
+// 4. Please change the precision positional number on the command line to an optional
+// precision after the same style as "--round=4"
+//
+// 5. Please make the --precision=<n> optional and if it is not specified then use a default
+// value of 40
+//
+// 6. Please add announcement info at the start of output that has the program name and
+// version number, then the version of java that is running the code and then the version
+// numbers of the packages used if they exist and finally output the precision and rounding
+// being used.
+//
+
+//
+// 0v9 Very minor mod to testing for even number of values
+// 0v8 Rearrange order of output and make output a bit more consistant with other bfbs programs
+// 0v7 Handle file not found and check user supplied integers
+//
+
+//
+// Possible capability not yet implemented; -
+// 1. --skip=<n> to skip n lines from the start of each file
+// 2. --scientific to force 1.0e1 type output formatting
+// 3. Higher moments like skew and kurtosis
+// 4. Output to a file
+// 5. Naive Histogram output
+//
+
+import java.io.*;
+import java.math.*;
+import java.nio.file.*;
+import java.util.*;
+
+public class bfbs {
+
+    public static void main(String[] args) throws IOException {
+        // Default precision if not provided
+        int precision = 40;         // 40 is the default precision
+        int roundDigits = -1;       // default to -1 (i.e full precision)
+        boolean hasHeader = false;
+        boolean hasHelp = false;
+        List<String> fileNames = new ArrayList<>();
+
+        // Parse arguments
+        for (String arg : args) {
+            if (arg.startsWith("--precision=")) {
+                try {
+                    precision = Integer.parseInt(arg.substring("--precision=".length()));
+                    if (precision > 1024) {    // limit user input
+                        precision = 1024;
+                    } else if (precision < 1) {
+                        precision = 1;
+                    }
+                } catch (NumberFormatException e) {
+                    System.err.println("Error: Invalid --precision value. Must be an integer.");
+                    return;
+                }
+            } else if (arg.startsWith("--round=")) {
+                try {
+                    roundDigits = Integer.parseInt(arg.substring("--round=".length()));
+                    if (roundDigits > 1024) {       // limit user input
+                        roundDigits = 1024;
+                    } else if (roundDigits < -1) {
+                        roundDigits = -1;             // -1 = full precision
+                    }
+                } catch (NumberFormatException e) {
+                    System.err.println("Error: Invalid --round value. Must be an integer.");
+                    return;
+                }
+            } else if (arg.equalsIgnoreCase("--has-header")) {
+                hasHeader = true;
+            } else if (arg.equalsIgnoreCase("--help")) {
+                hasHelp = true;
+            } else if (arg.equalsIgnoreCase("-h")) {
+                hasHelp = true;
+            } else if (arg.startsWith("-")) {	//catch unknown option
+                System.out.println("Error: Command line option \"" + arg + "\" not recognized?");
+                hasHelp = true;
+            } else {
+                fileNames.add(arg);
+            }
+        }
+
+        if (hasHelp || fileNames.isEmpty()) {
+            System.err.println("Usage: java bfbs [--precision=<n>] [--round=<n>] [--has-header] [--help] <file1.csv> [file2.csv] ...");
+            return;
+        }
+
+        // 🎉 Program info banner
+        System.out.println("bfbs 0v9");
+        String javaVersion = System.getProperty("java.version");
+        System.out.println("Running on Java version: " + javaVersion);
+        System.out.println("Using java.math.BigDecimal (standard library)");
+        System.out.println("Calculation precision: " + precision + " digits");
+
+        if (roundDigits >= 0) {
+            System.out.println("Output rounding: " + roundDigits + " decimal places");
+        } else {
+            System.out.println("Output rounding: full precision");
+        }
+        System.out.println();    // spacer line
+
+        MathContext mc = new MathContext(precision, RoundingMode.HALF_UP);
+
+        for (String fileName : fileNames) {
+            Path filePath = Paths.get(fileName);
+            if(! Files.exists(filePath)) {
+                System.err.println("Error: file named \"" + fileName + "\" could not be found?");
+                continue;
+            }
+            System.out.println("Processing file: " + fileName);
+            List<String> headers = new ArrayList<>();
+            List<List<BigDecimal>> columns = readCSV(fileName, hasHeader, headers);
+
+            for (int colIndex = 0; colIndex < columns.size(); colIndex++) {
+                List<BigDecimal> column = columns.get(colIndex);
+                if (column.isEmpty()) continue;
+
+                Collections.sort(column);
+                String label = hasHeader && colIndex < headers.size()
+                        ? headers.get(colIndex)
+                        : "Column " + (colIndex + 1);
+
+                System.out.println(label + ":");
+                printStats(column, mc, roundDigits);
+                System.out.println();
+            }
+        }
+    }
+
+
+    private static List<List<BigDecimal>> readCSV(String fileName, boolean hasHeader, List<String> headers) throws IOException {
+        List<List<BigDecimal>> columns = new ArrayList<>();
+        boolean headerRead = false;
+
+        try (BufferedReader reader = Files.newBufferedReader(Paths.get(fileName))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+
+                String[] tokens = line.split(",");
+
+                if (hasHeader && !headerRead) {
+                    for (String token : tokens) {
+                        headers.add(token.trim());
+                    }
+                    headerRead = true;
+                    continue;
+                }
+
+                for (int i = 0; i < tokens.length; i++) {
+                    String token = tokens[i].trim();
+                    if (token.isEmpty()) continue;
+
+                    BigDecimal value;
+                    try {
+                        value = new BigDecimal(token);
+                    } catch (NumberFormatException e) {
+                        continue; // skip invalid numbers
+                    }
+
+                    while (columns.size() <= i) {
+                        columns.add(new ArrayList<>());
+                    }
+
+                    columns.get(i).add(value);
+                }
+            }
+        }
+
+        return columns;
+    }
+
+    private static void printStats(List<BigDecimal> data, MathContext mc, int roundDigits) {
+        int n = data.size();
+
+        BigDecimal min = data.get(0);
+        BigDecimal max = data.get(n - 1);
+        BigDecimal sum = BigDecimal.ZERO;
+        for (BigDecimal val : data) {
+            sum = sum.add(val, mc);
+        }
+
+        BigDecimal mean = sum.divide(BigDecimal.valueOf(n), mc);
+
+        BigDecimal median;
+        if ((n & 1) == 0) {     // Determine if n is even. If it is then average middle 2 values
+            median = data.get(n / 2 - 1).add(data.get(n / 2), mc).divide(BigDecimal.valueOf(2), mc);
+        } else {
+            median = data.get(n / 2);
+        }
+
+        BigDecimal range = max.subtract(min, mc);
+
+        BigDecimal varianceSum = BigDecimal.ZERO;
+        for (BigDecimal val : data) {
+            BigDecimal diff = val.subtract(mean, mc);
+            BigDecimal squared = diff.multiply(diff, mc);
+            varianceSum = varianceSum.add(squared, mc);
+        }
+
+        BigDecimal sampleVariance = (n > 1)
+                ? varianceSum.divide(BigDecimal.valueOf(n - 1), mc)
+                : BigDecimal.ZERO;
+
+        BigDecimal sampleStdDev = sqrt(sampleVariance, mc);
+
+        // Display results (rounded if requested)
+        System.out.println("  Count            : " + n);
+        System.out.println("  Minimum          : " + format(min, roundDigits));
+        System.out.println("  Mean             : " + format(mean, roundDigits));
+        System.out.println("  Median           : " + format(median, roundDigits));
+        System.out.println("  Maximum          : " + format(max, roundDigits));
+        System.out.println("  Range            : " + format(range, roundDigits));
+        System.out.println("  Sum              : " + format(sum, roundDigits));
+        System.out.println("  Sample Variance  : " + format(sampleVariance, roundDigits));
+        System.out.println("  Sample Std. Dev. : " + format(sampleStdDev, roundDigits));
+    }
+
+    private static String format(BigDecimal value, int roundDigits) {
+        if (roundDigits >= 0) {
+            return value.setScale(roundDigits, RoundingMode.HALF_UP).toPlainString();
+        }
+        return value.toPlainString();
+    }
+
+    public static BigDecimal sqrt(BigDecimal value, MathContext mc) {
+        if (value.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO;
+        }
+
+        BigDecimal x = new BigDecimal(Math.sqrt(value.doubleValue()));
+        BigDecimal two = BigDecimal.valueOf(2);
+        int maxIterations = mc.getPrecision() + 5;
+
+        for (int i = 0; i < maxIterations; i++) {
+            x = x.add(value.divide(x, mc)).divide(two, mc);
+        }
+
+        return x.round(mc);
+    }
+}

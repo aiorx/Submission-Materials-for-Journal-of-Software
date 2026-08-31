@@ -1,0 +1,459 @@
+#include <iostream>
+#include <system_error>
+#include <ctime>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <boost/asio.hpp>
+#include <boost/outcome.hpp>
+#include <boost/url.hpp>
+#include <boost/heap/priority_queue.hpp>
+#include <boost/pool/pool.hpp>
+#include <boost/pool/object_pool.hpp>
+#include <boost/algorithm/string.hpp>
+#include <boost/date_time/posix_time/posix_time.hpp>
+#include <google/protobuf/util/time_util.h>
+#include <boost/unordered_map.hpp>
+#include <boost/circular_buffer.hpp>
+#include <boost/lockfree/queue.hpp>
+#include <boost/chrono.hpp>
+#include <boost/thread.hpp>
+#include <boost/random.hpp>
+
+#include <boost/pool/object_pool.hpp>
+
+#include "e2sarHeaders.hpp"
+
+using namespace boost::asio;
+namespace outcome = BOOST_OUTCOME_V2_NAMESPACE;
+using namespace std::string_literals;
+
+void funcRef(const std::vector<int> &v)
+{
+    std::cout << "Ref" << std::endl;
+    for(auto a: v)
+        std::cout << a << " ";
+    std::cout << std::endl;
+}
+
+void funcMv(std::vector<int> &&v)
+{
+    std::cout << "Move" << std::endl;
+    for(auto a: v)
+        std::cout << a << " ";
+    std::cout << std::endl;
+}
+
+// Supported via standard programming aids
+struct pair_hash {
+    std::size_t operator()(const std::pair<u_int64_t, u_int16_t>& p) const {
+        u_int64_t hash1 = p.first;
+        u_int64_t tmp = p.second;
+        u_int64_t hash2 = tmp | tmp << 16 | tmp << 32 | tmp << 48;
+        return hash1 ^ hash2;  // Combine the two hashes
+    }
+};
+
+struct pair_equal {
+    bool operator()(const std::pair<u_int64_t, u_int16_t>& lhs, const std::pair<u_int64_t, u_int16_t>& rhs) const {
+        return lhs.first == rhs.first && lhs.second == rhs.second;
+    }
+};
+
+int main()
+{
+
+    // Test boost IP addresses
+    ip::address ipv4 = ip::make_address("192.168.1.1");
+    ip::address ipv6 = ip::make_address("2001:db8:0000:1:1:1:1:1");
+    try
+    {
+        ip::make_address("blaaaa");
+    }
+    catch (boost::system::system_error &e)
+    {
+        std::cout << "Unable to convert string to address" << std::endl;
+    }
+
+    std::cout << "IPv4 " << ipv4 << ' ' << ipv4.is_v4() << '\n';
+    std::cout << "IPv6 " << ipv6 << ' ' << ipv6.is_v6() << '\n';
+
+    // Test name resolution
+    boost::asio::io_service io_service;
+
+    ip::udp::resolver resolver(io_service);
+    ip::udp::resolver::query query("www.renci.org", "445");
+    ip::udp::resolver::iterator iter = resolver.resolve(query);
+    ip::udp::resolver::iterator end; // End marker.
+    while (iter != end)
+    {
+        ip::udp::endpoint endpoint = *iter++;
+        ip::address address = endpoint.address();
+        std::cout << address << ' ' << address.is_v4() << ' ' << std::endl;
+    }
+
+    // Test URL parsing
+    std::string uri_string{"ejfat://token@192.188.29.6:18020/lb/36?sync=192.188.29.6:19020&data=192.188.29.20"};
+    boost::system::result<boost::url_view> r = boost::urls::parse_uri(uri_string);
+
+    if (!r)
+    {
+        if (r.error())
+            std::cout << "Unable to convert! "s << r.error() << std::endl;
+    }
+    else
+    {
+
+        boost::url_view u = r.value();
+
+        std::cout << u.scheme() << std::endl;
+        std::cout << u.userinfo() << " " << u.userinfo().length() << std::endl;
+        std::cout << u.host() << std::endl;
+        std::cout << u.port() << std::endl;
+        std::cout << u.path() << std::endl;
+        std::cout << u.query() << std::endl;
+
+        for (auto param : u.params())
+            std::cout << param.key << ": " << param.value << std::endl;
+
+        std::vector<std::string> lb_path;
+        boost::split(lb_path, u.path(), boost::is_any_of("/"));
+        for (auto g : lb_path)
+        {
+            std::cout << ": " << g << std::endl;
+        }
+    }
+
+    // Timestamp conversions
+    // from std::time_t
+    std::time_t now = std::time(nullptr);
+    google::protobuf::Timestamp ts = google::protobuf::util::TimeUtil::TimeTToTimestamp(now);
+
+    // from boost::ptime with time difference
+    boost::posix_time::ptime pt = boost::posix_time::second_clock::local_time();
+    boost::posix_time::time_duration td = boost::posix_time::hours(24);
+    boost::posix_time::ptime pt1 = pt + td;
+    std::cout << "Now + 1 day is " << pt1 << std::endl;
+    google::protobuf::Timestamp ts1 = google::protobuf::util::TimeUtil::TimeTToTimestamp(to_time_t(pt1));
+    std::cout << ts1 << std::endl;
+
+
+    // pool tests
+
+    // object pool for queue items
+    struct qItem {
+        char preamble[2] {'L', 'B'};
+        uint32_t bytes;
+        uint64_t tick;
+        char     *event;
+        void     *cbArg;
+        void* (*callback)(void *);
+
+        qItem(): bytes{100}, tick{1000} {};
+    };
+
+    std::cout << "Item size " << sizeof(qItem) << std::endl;
+    boost::object_pool<qItem> pool{sizeof(qItem) * 10, 0};
+    std::cout << pool.get_next_size() << '\n';
+
+    auto newItem = pool.construct();
+
+    std::cout << pool.get_next_size() << '\n';
+
+    newItem->tick = 1001;
+
+    std::cout << newItem->tick << " " << newItem->bytes << std::endl;
+
+    std::cout << newItem->preamble[0] << newItem->preamble[1] << std::endl;
+
+    pool.free(newItem);
+
+    std::cout << (1 << 4) << std::endl;
+
+    std::cout << "Sync header size (expecting 28) = " << sizeof(e2sar::SyncHdr) << std::endl;
+
+    {
+        std::cout << "  Empty scope executes once" << std::endl;
+    }
+
+    std::cout << "  LB Hdr size (expecting 16) = " << sizeof(e2sar::LBHdr) << std::endl;
+    std::cout << "  RE Hdr size (expecting 20) = " << sizeof(e2sar::REHdr) << std::endl;
+    std::cout << "  LB+RE Hdr size (expecting 36) = " << sizeof(e2sar::LBREHdr) << std::endl;
+
+
+    // test allocating N ports to M threads
+    std::vector<int> ports{1,2,3,4};
+    std::cout << "Assignable ports: " << std::endl;
+    std::cout << "  ";
+    for(auto i: ports)
+        std::cout << i  << " ";
+    std::cout << std::endl;
+
+    size_t threads{3};
+
+    std::vector<std::list<int>> ptt(threads); 
+
+    for(size_t i=0;i<ports.size();)
+    {
+        for(size_t j=0;j<threads && i<ports.size();i++,j++)
+        {
+            ptt[j].push_back(ports[i]);
+        }
+    }
+
+    std::cout << "Assigned ports to threads: " << std::endl;
+    int t{0};
+    for(auto l: ptt)
+    {
+        std::cout << "  Thread " << t++ << ": " << std::endl;
+        for(auto e: l)
+            std::cout << e << " ";
+        std::cout << std::endl;
+    }
+
+    std::list<std::unique_ptr<int>> recvThreadState(5);
+    std::cout << "Testing list: allocated size is (5) " << recvThreadState.size() << std::endl;
+
+    // testing dealing with portRange
+    std::cout << "Testing portRange:" << std::endl;
+    int portRange{3};
+    size_t numPorts{static_cast<size_t>(2 << (portRange - 1))};
+    u_int16_t startPort{1850};
+    size_t numThreads{3};
+
+    std::cout << "  Allocating " << numPorts << " ports from portRange " << portRange << " to " << numThreads << " threads" << std::endl;
+    for(size_t i=0; i<numPorts;)
+    {
+        for(size_t j=0; i<numPorts && j<numThreads; i++, j++)
+        {
+            std::cout << "  Assigning port " << startPort + i << " to thread " << j << std::endl;
+        } 
+    }
+
+    // testing passing vectors
+    std::cout << "Passing vectors " << std::endl;
+    std::vector<int> va{1,2,3};
+    std::vector<int> vb{2,3,4};
+
+    funcRef(va);
+    for(auto a: va)
+        std::cout << "  " << a << " ";
+    std::cout << std::endl;
+
+    funcMv(std::move(vb));
+    for(auto a: vb)
+        std::cout << "  " << a << " ";
+    std::cout << std::endl;
+
+    // testing fd_set copy constructor
+    std::cout << "Testing fdset" << std::endl;
+    fd_set fdSet{};
+
+    FD_SET(0, &fdSet);
+    FD_SET(2, &fdSet);
+
+    fd_set newSet{fdSet};
+
+    std::cout << "  old set " << FD_ISSET(0, &fdSet) << " " << FD_ISSET(1, &fdSet) << " " << FD_ISSET(2, &fdSet) << std::endl;
+    std::cout << "  new set " << FD_ISSET(0, &newSet) << " " << FD_ISSET(1, &newSet) << " " << FD_ISSET(2, &newSet) << std::endl;
+
+    // test priority queue for custom events
+    std::cout << "Priority queue" << std::endl;
+    struct Event {
+        int len;
+        int offset;
+    };
+
+    struct EventComparator {
+        bool operator() (const Event &l, const Event &r) const {
+            return l.offset > r.offset;
+        }
+    };
+
+    Event e1{5, 0};
+    Event e2{3, 5};
+    Event e3{2, 8};
+
+    boost::heap::priority_queue<Event, boost::heap::compare<EventComparator>> pq;
+
+    pq.push(e2);
+    pq.push(e3);
+    pq.push(e1);
+
+    for(; !pq.empty(); pq.pop())
+        std::cout << "  Event len " << pq.top().len << " offset " << pq.top().offset << std::endl;
+
+    
+    // test boost pool array allocation
+    std::cout << "Test pool allocation" << std::endl;
+    boost::pool<> bufpool(20);
+
+    auto ar1 = static_cast<char*>(bufpool.malloc());
+    auto ar2 = static_cast<char*>(bufpool.malloc());
+
+    std::strcpy(ar1, "Hello world!");
+    std::strcpy(ar2, "I have come to help!");
+
+    std::cout << "  Ar1 " << ar1 << std::endl;
+    std::cout << "  Ar2 " << ar2 << std::endl;
+
+    bufpool.free(ar1);
+    bufpool.free(ar2);
+
+    std::cout << "Test array of lists" << std::endl;
+
+    std::vector<std::list<int>> portsToThreads;
+
+    portsToThreads.emplace(portsToThreads.end());
+
+    portsToThreads[0].push_back(1);
+
+    std::cout << "Test unordered map with pairs as keys" << std::endl;
+
+    boost::unordered_map<std::pair<u_int64_t, u_int16_t>, std::string, pair_hash, pair_equal> map;
+
+    map[std::make_pair(0x123456, 1)] = "First event"s;
+    map[std::make_pair(0x123456, 2)] = "Second event"s;
+    map[std::make_pair(0x1234567, 10)] = "Third event"s;
+
+    std::cout << map[std::make_pair(0x123456, 1)] << std::endl;
+    std::cout << map[std::make_pair(0x123456, 2)] << std::endl;
+    std::cout << map[std::make_pair(0x1234567, 10)] << std::endl;
+
+
+    std::cout << "Test circular buffer" << std::endl;
+
+    boost::circular_buffer<int> pidSampleBuffer(5);
+
+    for (int i = 0; i<6; i++)
+        pidSampleBuffer.push_back(i);
+
+    std::cout << "Head of buffer " << pidSampleBuffer.front() << std::endl;
+    std::cout << "Tail of buffer " << pidSampleBuffer.back() << std::endl;
+
+    for (int i = 10; i<20; i++)
+        pidSampleBuffer.push_back(i);
+
+    std::cout << "Head of buffer " << pidSampleBuffer.front() << std::endl;
+    std::cout << "Tail of buffer " << pidSampleBuffer.back() << std::endl;
+
+    std::cout << "Test allocate deallocate" << std::endl;
+
+    boost::lockfree::queue<std::pair<int, u_int16_t>*> lostEventsQueue{20};
+
+    for(int i=0; i<5; i++)
+    {
+        lostEventsQueue.push(new std::pair<int, u_int16_t>(i, i*10));
+    }
+
+    std::pair<int, u_int16_t> *res;
+    while(lostEventsQueue.pop(res))
+    {
+        auto ret = *res;
+        std::cout << "Retrieved " << ret.first << ":" << ret.second << std::endl;
+        delete res;
+    }
+
+    std::cout << "Clock tests" << std::endl;
+
+    // we want to know if system clock usecs produces enough randomness in the bottom 9
+    // bits and if not add randomness in them. 
+
+    std::vector<int_least64_t> points;
+    int total{10000};
+    std::vector<int> bins(256, 0);
+
+    for (int i = 0; i < total; i++)
+    {
+        auto now1 = boost::chrono::system_clock::now();
+        auto now1Usec = boost::chrono::duration_cast<boost::chrono::microseconds>(now1.time_since_epoch()).count();
+        bins[now1Usec & 0xff]++;
+        auto until = now1 + boost::chrono::milliseconds(1);
+        boost::this_thread::sleep_until(until);
+    }
+
+    // compute the probabilities and entropy
+    float prob{0.0}, probsum{0.0};
+    float entropy{0.0};
+    for (size_t i = 0; i < bins.size(); i++)
+    {
+        prob = static_cast<float>(bins[i])/(total*1.0);
+        entropy += prob * std::log(prob);
+        probsum += prob;
+    }
+
+    entropy *= -1.0/std::log(2);
+
+    std::cout << "Probability sum " << probsum << std::endl;
+    std::cout << "Entropy is " << entropy << " bits" << std::endl;
+
+    // add entropy to a clock sample
+    boost::random::ranlux24_base ranlux;
+    boost::random::uniform_int_distribution<> randDist{0, 255};
+
+    auto now1 = boost::chrono::system_clock::now();
+    auto now1Usec = boost::chrono::duration_cast<boost::chrono::microseconds>(now1.time_since_epoch()).count();
+
+    // replace lower 8 bits
+    auto addedEntropy = (now1Usec & ~0xFF) | randDist(ranlux);
+    std::cout << "Original timestamp " << now1Usec << " with added entropy " << addedEntropy << std::endl;
+    std::cout << "Original & 0xFF " << (now1Usec & 0xFF) << " with added entropy & 0xFF " << (addedEntropy & 0xFF) << std::endl; 
+    
+    std::string ar[] = 
+    {
+        "string1",
+        "string2"
+    };
+
+    std::string sum;
+
+    for (std::string s: ar)
+    {
+        sum += s + ", ";
+    }
+
+    std::cout << "The sum of strings: " << sum << std::endl;
+
+    // round-up integer divide
+    size_t maxPldLen = 9000;
+
+    for(size_t bytes = 35998; bytes < 36002; bytes++)
+    {
+        auto numFrames = (bytes + maxPldLen -1)/ maxPldLen;
+
+        std::cout << "Number of frames for event of size " << bytes << " and payload length " << maxPldLen << " is " << numFrames << std::endl;
+    }
+
+    std::vector<std::string> strs = {"one", "two", "three"};
+    auto it = strs.begin();
+    std::string rets{};
+    while(it != strs.end())
+    {
+        rets += *it;
+        it++;
+        if (it != strs.end())
+            rets += ", ";
+    }
+    std::cout << "Return string " << rets << std::endl;
+
+    // Duration
+    std::string duration{"00:00:00"};
+    auto duration_v = boost::posix_time::duration_from_string(duration);
+    std::cout << "Duration string " << duration << " converts to " << duration_v << std::endl;
+
+    // converting vector of IP addresses to vector of strings using lambdas
+    std::vector<ip::address> ipVec;
+    ipVec.push_back(ip::make_address("192.168.1.1"));
+    ipVec.push_back(ip::make_address("192.168.100.2"));
+
+    std::vector<std::string> strVec;
+
+    for_each(ipVec.begin(), ipVec.end(), [&strVec](const ip::address &a)
+        {
+            strVec.push_back(a.to_string());
+        }
+    );
+    for(auto a: strVec)
+        std::cout << "ADDRESS IS " << a << std::endl;
+}
+

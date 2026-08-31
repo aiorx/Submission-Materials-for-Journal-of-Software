@@ -1,0 +1,46 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+import uvicorn
+import os
+from app.utils.mongodb import MongoDB
+from app.routes.model_routes import router as model_router
+from app.routes.chat_routes import router as chat_router
+from app.routes.debug_routes import router as debug_router
+
+# Load environment variables
+load_dotenv()
+
+app = FastAPI(title="LLM Chat Backend")
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(model_router, prefix="/api", tags=["models"])
+app.include_router(chat_router, prefix="/api", tags=["chat"])
+app.include_router(debug_router, prefix="/api", tags=["debug"])
+
+@app.on_event("startup")
+async def startup_event():
+    await MongoDB.connect_to_mongo()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await MongoDB.close_mongo_connection()
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "app.main:app",  # Use the correct module path
+        host=os.getenv("API_HOST", "0.0.0.0"),
+        port=int(os.getenv("API_PORT", 8000)),
+        reload=True
+    )
+
+# Aided with basic GitHub coding tools

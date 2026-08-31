@@ -1,0 +1,235 @@
+// Assisted using common GitHub development utilities
+// Common TypeScript interfaces and types for PrismWeave Browser Extension
+
+export interface ISettings {
+  // Repository Settings
+  githubToken: string;
+  githubRepo: string;
+
+  // File Organization Settings
+  defaultFolder: string;
+  customFolder: string;
+  fileNamingPattern: string;
+
+  // Automation Settings
+  autoCommit: boolean;
+
+  // Content Processing Settings
+  captureImages: boolean;
+  removeAds: boolean;
+  removeNavigation: boolean;
+  customSelectors: string;
+
+  // Git & Repository Settings
+  commitMessageTemplate: string;
+
+  // Debugging Settings
+  debugMode: boolean;
+
+  // UI Preferences
+  showNotifications: boolean;
+  enableKeyboardShortcuts: boolean;
+
+  // Bookmarklet Settings (flattened for schema compatibility)
+  'bookmarklet.enabled': boolean;
+  'bookmarklet.customDomain': string;
+  'bookmarklet.includeImages': boolean;
+  'bookmarklet.includeLinks': boolean;
+  'bookmarklet.cleanAds': boolean;
+  'bookmarklet.customSelectors': string[];
+  'bookmarklet.excludeSelectors': string[];
+  'bookmarklet.autoInstall': boolean;
+  'bookmarklet.version': string;
+}
+
+export interface IBookmarkletSettings {
+  enabled: boolean;
+  customDomain?: string;
+  includeImages: boolean;
+  includeLinks: boolean;
+  cleanAds: boolean;
+  customSelectors: string[];
+  excludeSelectors: string[];
+  autoInstall: boolean;
+  version: string;
+}
+
+// Helper function to extract bookmarklet settings from flat ISettings
+export function extractBookmarkletSettings(settings: Partial<ISettings>): IBookmarkletSettings {
+  return {
+    enabled: settings['bookmarklet.enabled'] ?? false,
+    customDomain: settings['bookmarklet.customDomain'] ?? '',
+    includeImages: settings['bookmarklet.includeImages'] ?? true,
+    includeLinks: settings['bookmarklet.includeLinks'] ?? true,
+    cleanAds: settings['bookmarklet.cleanAds'] ?? true,
+    customSelectors: settings['bookmarklet.customSelectors'] ?? [],
+    excludeSelectors: settings['bookmarklet.excludeSelectors'] ?? [
+      'nav',
+      'header',
+      'footer',
+      '.advertisement',
+      '.ad',
+    ],
+    autoInstall: settings['bookmarklet.autoInstall'] ?? false,
+    version: settings['bookmarklet.version'] ?? '1.0.0',
+  };
+}
+
+export interface IMessageData {
+  type: string;
+  data?: Record<string, unknown>;
+  timestamp?: number;
+}
+
+export interface IMessageResponse {
+  success: boolean;
+  data?: unknown;
+  error?: string;
+}
+
+export interface IDocumentMetadata {
+  title: string;
+  url: string;
+  captureDate: string;
+  tags: string[];
+  author?: string;
+  wordCount?: number;
+  estimatedReadingTime?: number;
+}
+
+export interface IImageAsset {
+  originalUrl: string;
+  localPath: string;
+  filename: string;
+  size: number;
+  mimeType: string;
+}
+
+export interface IFileOperationResult {
+  success: boolean;
+  filePath?: string;
+  error?: string;
+  size?: number;
+  sha?: string;
+  url?: string;
+}
+
+export interface ICaptureResult {
+  success: boolean;
+  message: string;
+  data?: {
+    filename: string;
+    filePath: string;
+    title?: string;
+    url?: string;
+    markdownLength: number;
+    markdown?: string;
+    commitUrl?: string;
+    status?: string;
+    timestamp: string;
+  };
+}
+
+// Storage type helpers - Note: SettingsManager has its own duplicate types
+// These are kept for consistency but SettingsManager uses local versions
+export type StorageKeys = string | string[] | Record<string, unknown> | null;
+export type StorageResult<T = Record<string, unknown>> = Promise<T>;
+
+// Content extraction data interfaces
+export interface IContentExtractionData {
+  html: string;
+  title?: string;
+  url?: string;
+  metadata?: Record<string, unknown>;
+  markdown?: string;
+  frontmatter?: string;
+  images?: string[];
+}
+
+export const MESSAGE_TYPES = {
+  GET_SETTINGS: 'GET_SETTINGS',
+  UPDATE_SETTINGS: 'UPDATE_SETTINGS',
+  RESET_SETTINGS: 'RESET_SETTINGS',
+  VALIDATE_SETTINGS: 'VALIDATE_SETTINGS',
+  TEST_CONNECTION: 'TEST_CONNECTION',
+  CAPTURE_PAGE: 'CAPTURE_PAGE',
+  CAPTURE_LINK: 'CAPTURE_LINK', // New message type for link capture
+  CAPTURE_PDF: 'CAPTURE_PDF',
+  CHECK_PDF: 'CHECK_PDF',
+  CAPTURE_CONTENT: 'CAPTURE_CONTENT', // New unified capture message
+  GET_STATUS: 'GET_STATUS',
+  TEST: 'TEST',
+  // Bookmarklet message types
+  GENERATE_BOOKMARKLET: 'GENERATE_BOOKMARKLET',
+  VALIDATE_BOOKMARKLET_CONFIG: 'VALIDATE_BOOKMARKLET_CONFIG',
+  GET_BOOKMARKLET_STATUS: 'GET_BOOKMARKLET_STATUS',
+};
+
+// Bookmarklet-specific interfaces
+export interface IBookmarkletConfig {
+  githubToken: string;
+  githubRepo: string;
+  githubBranch?: string;
+  folderPath?: string;
+  autoCommit?: boolean;
+  includeImages?: boolean;
+  includeLinks?: boolean;
+  cleanHtml?: boolean;
+  showPreview?: boolean;
+  uiTheme?: 'light' | 'dark' | 'auto';
+  autoSave?: boolean;
+  captureOptions?: {
+    includeImages: boolean;
+    includeLinks: boolean;
+    cleanHtml: boolean;
+    generateFrontmatter: boolean;
+    includeMetadata: boolean;
+  };
+  commitMessageTemplate?: string;
+  defaultFolder?: string;
+  customFolder?: string;
+  fileNamingPattern?: string;
+  captureImages?: boolean;
+  removeAds?: boolean;
+  removeNavigation?: boolean;
+}
+
+export interface IBookmarkletGenerationOptions {
+  minify?: boolean;
+  includeDebugInfo?: boolean;
+  customDomain?: string;
+  version?: string;
+}
+
+export interface IBookmarkletResult {
+  success: boolean;
+  bookmarkletCode?: string;
+  bookmarkletName?: string;
+  installationInstructions?: string;
+  error?: string;
+  config?: IBookmarkletConfig;
+}
+
+export interface IBookmarkletValidationResult {
+  isValid: boolean;
+  errors: string[];
+  warnings: string[];
+  estimatedSize?: number;
+}
+
+export interface IBookmarkletContentData {
+  title: string;
+  url: string;
+  markdown: string;
+  frontmatter: string;
+  content: string;
+  wordCount: number;
+  extractedAt: string;
+}
+export interface IContentExtractionResult {
+  success: boolean;
+  data?: IContentExtractionData;
+  error?: string;
+  extractionMethod?: 'content-script' | 'direct' | 'basic-fallback' | 'pre-extracted';
+  timestamp?: string;
+}

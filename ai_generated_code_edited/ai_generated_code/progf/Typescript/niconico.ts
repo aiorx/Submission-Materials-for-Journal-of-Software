@@ -1,0 +1,429 @@
+// Notice! This file JSDOC is Supported by standard GitHub tools.
+// So some of this JSDOC is not correct.
+// Please refer to documents https://multi-embed-player.pages.dev/docs/reference/iframe_class/#mep_niconico-class
+
+/**
+ * @typedef {Object} mep_niconico_load_object
+ * @property {string} videoId - The ID of the video.
+ * @property {number} [startSeconds] - The start time of the video.
+ * @property {number} [endSeconds] - The end time of the video.
+ */
+interface mep_niconico_load_object {
+    videoId: string;
+    startSeconds?: number;
+    endSeconds?: number;
+}
+
+/**
+ * @typedef {Object} mep_niconico_playerVars
+ * @property {number} [startSeconds] - The start time of the video.
+ * @property {number} [endSeconds] - The end time of the video.
+ * @property {number} [autoplay] - Whether the video is on autoplay.
+ * @property {number} [displayComment] - Whether the video is on display comment mode.
+ */
+interface mep_niconico_playerVars {
+    startSeconds?: number;
+    endSeconds?: number;
+    autoplay?: number;
+    displayComment?: number;
+}
+
+/**
+ * @typedef {Object} mep_niconico_content
+ * @property {string} videoId - The ID of the video.
+ * @property {number} width - The width of the player.
+ * @property {number} height - The height of the player.
+ * @property {mep_niconico_playerVars} playerVars - The player variables.
+ */
+interface NiconicoPlayerState {
+    isRepeat: boolean;
+    playerStatus: number;
+    currentTime?: number;        // ミリ秒単位
+    duration?: number;           // ミリ秒単位
+    muted?: boolean;             // ミュート状態
+    volume?: number;             // 0-1の範囲
+    videoInfo?: {
+        title?: string;          // 動画タイトル
+    };
+}
+
+interface mep_niconico_content {
+    videoId: string;
+    width: number;
+    height: number;
+    playerVars?: mep_niconico_playerVars;
+}
+
+interface NiconicoPlayMessage {
+    eventName: 'play';
+}
+
+interface NiconicoPauseMessage {
+    eventName: 'pause';
+}
+
+interface NiconicoSeekMessage {
+    eventName: 'seek';
+    data: {
+        time: number;  // ミリ秒
+    };
+}
+
+interface NiconicoCommentVisibilityMessage {
+    eventName: 'commentVisibilityChange';
+    data: {
+        commentVisibility: boolean;
+    };
+}
+
+interface NiconicoMuteMessage {
+    eventName: 'mute';
+    data: {
+        mute: boolean;
+    };
+}
+
+interface NiconicoVolumeMessage {
+    eventName: 'volumeChange';
+    data: {
+        volume: number;  // 0-1の範囲
+    };
+}
+
+type NiconicoPostMessage = 
+    | NiconicoPlayMessage 
+    | NiconicoPauseMessage 
+    | NiconicoSeekMessage 
+    | NiconicoCommentVisibilityMessage 
+    | NiconicoMuteMessage 
+    | NiconicoVolumeMessage;
+
+/**
+ * Class representing a Niconico player.
+ */
+class mep_niconico{
+    state: NiconicoPlayerState;
+    startSeconds: number;
+    player: HTMLIFrameElement;
+    playerId: string;
+    autoplay_flag: boolean;
+    endSeconds: number;
+    displayCommentMode: boolean | undefined;
+    
+    /**
+     * The ID of the player.
+     * @type {number}
+     */
+    static playerId = 0;
+    /**
+     * The origin of the Niconico player.
+     * @type {string}
+     */
+    static origin = 'https://embed.nicovideo.jp';
+    /**
+     * The result of checking local storage.
+     * @type {boolean}
+     */
+    static localStorageCheck: boolean | null = null;
+    /**
+     * Create a Niconico player.
+     * @param {string|HTMLElement} replacing_element - The element to replace with the player.
+     * @param {Object} content - The content of the player.
+     * @param {Function} player_set_event_function - The function to set player events.
+     */
+    constructor(replacing_element: string | HTMLElement, content: mep_niconico_content, player_set_event_function?: (player: HTMLIFrameElement) => void){
+        /**
+         * The state of the player.
+         * @type {Object}
+         * @property {boolean} isRepeat - Whether the player is on repeat.
+         * @property {number} playerStatus - The status of the player.
+         */
+        let element: HTMLElement;
+        if(typeof replacing_element === "string"){
+            const found_element = document.getElementById(replacing_element);
+            if (!found_element) {
+                throw new Error(`Element with id "${replacing_element}" not found`);
+            }
+            element = found_element;
+        } else {
+            element = replacing_element;
+        }
+        this.state = {
+            isRepeat: false,
+            playerStatus: 0
+        };
+        this.#messageListener();
+        /**
+         * The start time of the player.
+         * @type {number}
+         */
+        this.startSeconds = 0;
+        if(content?.playerVars?.startSeconds!=undefined){
+            this.startSeconds = content?.playerVars?.startSeconds;
+        }
+        let niconico_doc = document.createElement("iframe");
+        niconico_doc.src = "https://embed.nicovideo.jp/watch/" + content["videoId"] + "?jsapi=1&playerId=" + String(mep_niconico.playerId) + "&from=" + String(this.startSeconds);
+        this.playerId = String(mep_niconico.playerId);
+        mep_niconico.playerId++;
+        niconico_doc.width = String(content["width"]);
+        niconico_doc.height = String(content["height"]);
+        niconico_doc.allow = "autoplay";//fix bug not autoplay on chrome
+        niconico_doc.allowFullscreen = true;//fix bug can't watch on full screen(all browser)
+        niconico_doc.style.border = "none";//fix bug display border on outer frame
+        element.replaceWith(niconico_doc);
+        /**
+         * The player element.
+         * @type {HTMLIFrameElement}
+         */
+        this.player = niconico_doc;
+        if(typeof player_set_event_function === "function"){
+            player_set_event_function(this.player);
+        }
+        /**
+         * Whether the player is on autoplay.
+         * @type {boolean}
+         */
+        this.autoplay_flag = false;
+        if(content?.playerVars?.autoplay==1){//終わり次第再生
+            this.autoplay_flag = true;
+        }
+        /**
+         * The end time of the player.
+         * @type {number}
+         */
+        this.endSeconds = -1;
+        if(content?.playerVars?.endSeconds!==undefined){
+            this.endSeconds = content?.playerVars?.endSeconds;
+        }
+        if(content?.playerVars?.displayComment!==undefined){
+            if(content?.playerVars?.displayComment==0){
+                this.displayCommentMode = false;
+            }
+            else if(content?.playerVars?.displayComment==1){
+                this.displayCommentMode = true;
+            }
+        }
+    }
+    /**
+     * Cue a video by ID.
+     * @param {mep_niconico_load_object} content - The content of the video.
+     */
+    cueVideoById(content: mep_niconico_load_object){
+        this.startSeconds = 0;
+        if(content["startSeconds"]!=undefined){
+            this.startSeconds = content["startSeconds"];
+        }
+        this.endSeconds = -1;
+        if(content["endSeconds"]!=undefined){
+            this.endSeconds = content["endSeconds"];
+        }
+        this.player.src = "https://embed.nicovideo.jp/watch/" + content["videoId"] + "?jsapi=1&playerId=" + String(this.playerId) + "&from=" + String(this.startSeconds);
+        this.autoplay_flag = false;
+    }
+    /**
+     * Load a video by ID.
+     * @param {mep_niconico_load_object} content - The content of the video.
+     */
+    loadVideoById(content: mep_niconico_load_object){
+        this.startSeconds = 0;
+        if(content["startSeconds"]!=undefined){
+            this.startSeconds = content["startSeconds"];
+        }
+        this.endSeconds = -1;
+        if(content["endSeconds"]!=undefined){
+            this.endSeconds = content["endSeconds"];
+        }
+        this.player.src = "https://embed.nicovideo.jp/watch/" + content["videoId"] + "?jsapi=1&playerId=" + String(this.playerId) + "&from=" + String(this.startSeconds);
+        this.autoplay_flag = true;
+    }
+    /**
+     * Get the real duration of the video.
+     * @returns {number} The duration of the video.
+     */
+    getRealDulation(): number{//original function
+        if(this.endSeconds==-1){
+            return this.getDuration() - this.startSeconds;
+        }
+        else{
+            return this.endSeconds - this.startSeconds;
+        }
+    }
+    /**
+     * Play the video.
+     */
+    playVideo(): void{
+        this.#postMessage({
+            eventName: 'play'
+        })
+    }
+    /**
+     * Pause the video.
+     */
+    pauseVideo(): void{
+        this.#postMessage({
+            eventName: 'pause'
+        })
+    }
+    /**
+     * Get the current time of the video.
+     * @returns {number} The current time of the video.
+     */
+    getCurrentTime(): number{
+        return (this.state.currentTime ?? 0)/1000;//msec->sec
+    }
+    /**
+     * Get the duration of the video.
+     * @returns {number} The duration of the video.
+     */
+    getDuration(): number{
+        return (this.state.duration ?? 0)/1000;//msec->sec
+    }
+    /**
+     * Get the title of the video.
+     * @returns {string} The title of the video.
+     */
+    getTitle(): string{
+        return this.state.videoInfo?.title ?? '';
+    }
+    /**
+     * Check if the video is muted.
+     * @returns {boolean} Whether the video is muted.
+     */
+    isMuted(): boolean{
+        return this.state.muted ?? false;
+    }
+    /**
+     * Get the volume of the video.
+     * @returns {number} The volume of the video.
+     */
+    getVolume(): number{
+        return Number(this.state.volume)*100;
+    }
+    /**
+     * Seek to a specific time in the video.
+     * @param {number} seconds - The time to seek to.
+     */
+    seekTo(seconds: number): void{
+        this.#postMessage({
+            eventName: 'seek',
+            data: {
+              time: seconds*1000//secounds->msec
+            }
+          })
+    }
+    /**
+     * Change the display comment mode of the video.
+     * @param {boolean} mode - The display comment mode to set.
+     */
+    displayComment(mode: boolean): void{
+        this.#postMessage({
+            eventName: "commentVisibilityChange",
+            data:{
+                commentVisibility: mode
+            }
+        })
+    }
+    /**
+     * Mute the video.
+     */
+    mute(): void{
+        this.#postMessage({
+            eventName: "mute",
+            data:{
+                mute:true
+            }
+        })
+    }
+    /**
+     * Unmute the video.
+     */
+    unMute(): void{
+        this.#postMessage({
+            eventName: "mute",
+            data:{
+                mute:false
+            }
+        })
+    }
+    /**
+     * Set the volume of the video.
+     * @param {number} volume - The volume to set.
+     */
+    setVolume(volume: number): void{
+        this.#postMessage({
+            eventName: "volumeChange",
+            data:{
+                volume: volume/100
+            }
+        })
+    }
+    /**
+     * Get the state of the player.
+     * @returns {number} The state of the player.
+     */
+    getPlayerState(): number{
+        if(this.getCurrentTime()>=this.getDuration()-0.5||(this.endSeconds!=-1&&this.getCurrentTime()>=(this.endSeconds-0.5))){//最後まで行った
+            return 4
+        }
+        else{
+            return this.state.playerStatus;
+        }
+    }
+    /**
+     * Post a message to the player.
+     * @param {Object} request - The request to post.
+     */
+    #postMessage(request: NiconicoPostMessage): void {
+        const message = Object.assign({
+            sourceConnectorType: 1,
+            playerId: this.playerId
+        }, request);
+        if (this.player.contentWindow) {
+            this.player.contentWindow.postMessage(message, (window as any).mep_niconico.origin);
+        }
+    }
+    /**
+     * Listen for messages from the player.
+     */
+    #messageListener(): void {
+        window.addEventListener('message', (e) => {
+          if (e.origin === (window as any).mep_niconico.origin && e.data.playerId === this.playerId) {
+            const { data } = e.data;
+            switch (e.data.eventName) {
+                case 'statusChange': {
+                    break;
+                }
+                case 'error':{
+                    this.player.dispatchEvent(new CustomEvent("onError", {detail:{code:500}}));
+                    break;
+                }
+                case 'playerMetadataChange':{
+                    break;
+                }
+                case 'loadComplete':{
+                    if(this.autoplay_flag){
+                        this.playVideo();
+                    }
+                    this.player.dispatchEvent(new Event("onReady"));
+                    break;
+                }
+                case 'playerStatusChange':{
+                    this.player.dispatchEvent(new CustomEvent("onStateChange", {detail: this.getPlayerState()}));
+                    if(this.getCurrentTime()>=this.getDuration()-0.5||(this.endSeconds!=-1&&this.getCurrentTime()>=(this.endSeconds-0.5))){//最後まで行った
+                        this.player.dispatchEvent(new Event("onEndVideo"));
+                    }
+                    break;
+                }
+                default:
+                    console.log(e.data);
+            }
+            
+            this.state = Object.assign({}, this.state, data);
+            if(this.endSeconds!=-1&&(this.state.currentTime ?? 0)>=this.endSeconds*1000){//終了時間の時自動で停止
+                this.pauseVideo();
+            }
+          }
+        });
+      }
+}
+(window as any).mep_niconico = mep_niconico;

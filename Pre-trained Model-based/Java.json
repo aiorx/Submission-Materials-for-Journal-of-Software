@@ -1,0 +1,59 @@
+{
+  "description": "Evaluation performance metrics for the Java GPTSniffer dataset, extracting only the overall mean and 10-fold cross-validation results for Accuracy and AUC.",
+  "summary": {
+    "accuracy_mean": 0.8953,
+    "auc_mean": 0.9601
+  },
+  "10_fold_cross_validation": [
+    {
+      "fold": 1,
+      "accuracy": 0.8495,
+      "auc": 0.9444
+    },
+    {
+      "fold": 2,
+      "accuracy": 0.9462,
+      "auc": 0.9778
+    },
+    {
+      "fold": 3,
+      "accuracy": 0.8387,
+      "auc": 0.9265
+    },
+    {
+      "fold": 4,
+      "accuracy": 0.9032,
+      "auc": 0.9704
+    },
+    {
+      "fold": 5,
+      "accuracy": 0.9462,
+      "auc": 0.9820
+    },
+    {
+      "fold": 6,
+      "accuracy": 0.9140,
+      "auc": 0.9852
+    },
+    {
+      "fold": 7,
+      "accuracy": 0.9247,
+      "auc": 0.9648
+    },
+    {
+      "fold": 8,
+      "accuracy": 0.9022,
+      "auc": 0.9674
+    },
+    {
+      "fold": 9,
+      "accuracy": 0.8913,
+      "auc": 0.9352
+    },
+    {
+      "fold": 10,
+      "accuracy": 0.8370,
+      "auc": 0.9470
+    }
+  ]
+}

@@ -1,0 +1,72 @@
+import os
+import json
+import base64
+from flask import Flask, request, jsonify
+from Crypto.Cipher import AES
+from Crypto.Hash import SHA1
+from google.cloud import firestore
+
+app = Flask(__name__)
+db = firestore.Client()
+
+def pad(s):
+    pad_len = 16 - len(s) % 16
+    return s + chr(pad_len) * pad_len
+
+# Function to unpad the plaintext after decryption
+def unpad(s):
+    pad_len = ord(s[-1])
+    return s[:-pad_len]
+
+def decrypt_aes(ciphertext_b64, key):
+    data = base64.b64decode(ciphertext_b64)
+    iv = data[:16]
+    ciphertext = data[16:]
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    pt = cipher.decrypt(ciphertext).decode('utf-8')
+    return unpad(pt)
+
+# Google Cloud Function entry point to get all locker accounts for a user
+# Function outline Supported via standard GitHub programming aids
+
+'''
+The function expects a JSON payload with the following fields:
+- username: The user's username
+- master_password: The user's master password
+
+The function will retrieve all accounts from Firestore under the user's document in the 'accounts' subcollection,
+decrypt the account passwords using AES encryption with a key derived from the master password,
+and return the account details in a JSON response.
+'''
+
+@app.route('/get_accounts', methods=['POST'])
+def get_accounts(request):
+    data = request.get_json(silent=True)
+
+    username = data.get('username')
+    master_password = data.get('master_password')
+
+    if not username or not master_password:
+        return jsonify({'error': 'Missing username or master_password'}), 400
+    
+    key = SHA1.new(master_password.encode('utf-8')).digest()[:16]
+    
+    accounts_ref = db.collection('users').document(username).collection('accounts')
+    docs = accounts_ref.stream()
+    result = []
+    for doc in docs:
+        acc = doc.to_dict()
+        try:
+            decrypted_pw = decrypt_aes(acc['account_password'], key)
+        except Exception:
+            decrypted_pw = 'DECRYPTION_FAILED'
+        result.append({
+            'account_id': acc.get('account_id', ''),
+            'account_username': acc.get('account_username', ''),
+            'account_password': decrypted_pw,
+            'comment': acc.get('comment', '')
+        })
+    return jsonify({'accounts': result})
+
+if __name__ == '__main__':
+    app.run(debug=True)

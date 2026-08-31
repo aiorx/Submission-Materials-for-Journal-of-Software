@@ -1,0 +1,41 @@
+```python
+def parse_raw_csv_line(line):
+    # This was 99% Composed with basic coding tools, thanks AI!
+    fields = []
+    current_field = []
+    inside_quotes = False
+    length = len(line)
+
+    i = 0
+    while i < length:
+        char = line[i]
+
+        if char == '"':
+            # Handle escaped quote ("").
+            if inside_quotes and i + 1 < length and line[i + 1] == '"':
+                # Add the single opening quote to the current field.
+                current_field.append('"')
+
+                # Skip the next quote.
+                i += 1
+            else:
+                # Toggle inside_quotes flag.
+                inside_quotes = not inside_quotes
+
+                # Add the single closing quote to the current field.
+                current_field.append(char)
+        # Comma outside of quotes indicates end of the field.
+        elif char == "," and not inside_quotes:
+            fields.append("".join(current_field))
+            current_field = []
+        else:
+            # Append normal characters to the current field.
+            current_field.append(char)
+
+        i += 1
+
+    # Append the last field.
+    fields.append("".join(current_field))
+
+    return fields
+```

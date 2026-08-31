@@ -1,0 +1,28 @@
+/**
+ * profiles.js
+ * 
+ * These profiles were Supported via standard programming aids.
+ * 
+ * Prompt:
+ * 
+ * I have 6 post genres: humor, nature, motivational, educational, news, and misc.
+ * Output an array of 15 JSON objects representing a social media profile with a 
+ * name (ex. name: 'todd-naturelover22') and a genre (ex. genre: 'nature').
+ */
+let profiles = [
+  { "name": "todd-naturelover22", "genre": "nature" },
+  { "name": "laughing_linda", "genre": "humor" },
+  { "name": "edu_evelyn99", "genre": "educational" },
+  { "name": "daily_motivate_dan", "genre": "motivational" },
+  { "name": "newsflash_nina", "genre": "news" },
+  { "name": "misc_maverick", "genre": "misc" },
+  { "name": "chuckles_charlie", "genre": "humor" },
+  { "name": "green_gary42", "genre": "nature" },
+  { "name": "zen_zara", "genre": "motivational" },
+  { "name": "brainy_ben", "genre": "educational" },
+  { "name": "update_ursula", "genre": "news" },
+  { "name": "random_ricky", "genre": "misc" },
+  { "name": "flora_fanatic88", "genre": "nature" },
+  { "name": "meme_machine_mel", "genre": "humor" },
+  { "name": "mindful_maria", "genre": "motivational" }
+]

@@ -1,0 +1,43 @@
+#pragma once
+
+#include <vector>
+
+struct Color
+{
+	float r;
+	float g;
+	float b;
+
+	Color();
+	Color(float _r, float _g, float _b);
+	~Color();
+
+};
+
+class BMPImage
+{
+public:
+	BMPImage(int _width, int _height);
+	~BMPImage();
+
+	Color getColor(int _x, int _y) const;
+	void setColor(const Color& _color, int _x, int _y);
+
+	void ExportBMPFile(const char* _path) const; //when a function header ends with semicolon
+	//that is a function DECLARATION (not a defintion) 
+	
+	void drawLine(int x0, int y0, int x1, int y1, const Color& color);
+
+	void drawCircle(int radius, int xCenter, int yCenter, const Color& color);
+
+private:
+	int width;
+	int height;
+	std::vector<Color> colors; //use of "composition" 
+	//BMP image is composed of (at least one) Color 
+
+};
+
+/*This is an implementation of "Bresenham's line drawing algorithm"
+that was Aided with basic GitHub coding tools (not me)
+*/

@@ -1,0 +1,255 @@
+// Assisted with basic coding tools
+#include <stdio.h>
+#include <stdlib.h>
+
+// Node structure
+typedef struct NODE
+{
+    int data;
+    struct NODE *next;
+};
+
+// Global variables
+NODE *head = NULL;
+
+// Function to add a node at the start of the list
+void addAtStart(int data)
+{
+    NODE *newNode = (NODE *)malloc(sizeof(NODE));
+    newNode->data = data;
+    newNode->next = head;
+    head = newNode;
+}
+
+// Function to add a node at the end of the list
+void addAtEnd(int data)
+{
+    NODE *newNode = (NODE *)malloc(sizeof(NODE));
+    newNode->data = data;
+    newNode->next = NULL;
+
+    if (head == NULL)
+    {
+        head = newNode;
+        return;
+    }
+
+    NODE *curr = head;
+    while (curr->next != NULL)
+    {
+        curr = curr->next;
+    }
+    curr->next = newNode;
+}
+
+// Function to add a node before a given node
+void addBefore(int key, int data)
+{
+    NODE *newNode = (NODE *)malloc(sizeof(NODE));
+    newNode->data = data;
+    newNode->next = NULL;
+
+    if (head == NULL)
+    {
+        printf("List is empty\n");
+        return;
+    }
+
+    if (head->data == key)
+    {
+        newNode->next = head;
+        head = newNode;
+        return;
+    }
+
+    NODE *curr = head;
+    while (curr->next != NULL && curr->next->data != key)
+    {
+        curr = curr->next;
+    }
+
+    if (curr->next == NULL)
+    {
+        printf("Key not found\n");
+        return;
+    }
+
+    newNode->next = curr->next;
+    curr->next = newNode;
+}
+
+// Function to add a node after a given node
+void addAfter(int key, int data)
+{
+    NODE *newNode = (NODE *)malloc(sizeof(NODE));
+    newNode->data = data;
+    newNode->next = NULL;
+
+    if (head == NULL)
+    {
+        printf("List is empty\n");
+        return;
+    }
+
+    NODE *curr = head;
+    while (curr != NULL && curr->data != key)
+    {
+        curr = curr->next;
+    }
+
+    if (curr == NULL)
+    {
+        printf("Key not found\n");
+        return;
+    }
+
+    newNode->next = curr->next;
+    curr->next = newNode;
+}
+
+// Function to delete the first node of the list
+void deleteStart()
+{
+    if (head == NULL)
+    {
+        printf("List is empty\n");
+        return;
+    }
+
+    NODE *temp = head;
+    head = head->next;
+    free(temp);
+}
+
+// Function to delete the last node of the list
+void deleteEnd()
+{
+    if (head == NULL)
+    {
+        printf("List is empty\n");
+        return;
+    }
+
+    if (head->next == NULL)
+    {
+        free(head);
+        head = NULL;
+        return;
+    }
+
+    NODE *curr = head;
+    while (curr->next->next != NULL)
+    {
+        curr = curr->next;
+    }
+    free(curr->next);
+    curr->next = NULL;
+}
+
+// Function to delete a node with a given key
+void deleteKey(int key)
+{
+    if (head == NULL)
+    {
+        printf("List is empty\n");
+        return;
+    }
+
+    if (head->data == key)
+    {
+        NODE *temp = head;
+        head = head->next;
+        free(temp);
+        return;
+    }
+
+    NODE *curr = head;
+    while (curr->next != NULL && curr->next->data != key)
+    {
+        curr = curr->next;
+    }
+
+    if (curr->next == NULL)
+    {
+        printf("Key not found\n");
+        return;
+    }
+
+    NODE *temp = curr->next;
+    curr->next = curr->next->next;
+    free(temp);
+}
+
+// Function to print the list
+void printList()
+{
+    NODE *curr = head;
+    while (curr != NULL)
+    {
+        printf("%d ", curr->data);
+        curr = curr->next;
+    }
+    printf("\n");
+}
+
+// Main function
+int main()
+{
+    int choice, data, key;
+    while (1)
+    {
+        printf("\n1. Add at start\n2. Add at end\n3. Add before\n4. Add after\n");
+        printf("5. Delete start\n6. Delete end\n7. Delete key\n8. Print list\n9. Exit\n");
+        printf("Enter your choice: ");
+        scanf("%d", &choice);
+
+        switch (choice)
+        {
+        case 1:
+            printf("Enter data to add at start: ");
+            scanf("%d", &data);
+            addAtStart(data);
+            break;
+        case 2:
+            printf("Enter data to add at end: ");
+            scanf("%d", &data);
+            addAtEnd(data);
+            break;
+        case 3:
+            printf("Enter key before which to add data: ");
+            scanf("%d", &key);
+            printf("Enter data to add before %d: ", key);
+            scanf("%d", &data);
+            addBefore(key, data);
+            break;
+        case 4:
+            printf("Enter key after which to add data: ");
+            scanf("%d", &key);
+            printf("Enter data to add after %d: ", key);
+            scanf("%d", &data);
+            addAfter(key, data);
+            break;
+        case 5:
+            deleteStart();
+            break;
+        case 6:
+            deleteEnd();
+            break;
+        case 7:
+            printf("Enter key to delete: ");
+            scanf("%d", &key);
+            deleteKey(key);
+            break;
+        case 8:
+            printf("List: ");
+            printList();
+            break;
+        case 9:
+            exit(0);
+        default:
+            printf("Invalid choice\n");
+        }
+    }
+
+    return 0;
+}

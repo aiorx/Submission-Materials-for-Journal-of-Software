@@ -1,0 +1,170 @@
+import signal
+import threading
+import curio
+import subprocess
+import ctypes, os, sys, shutil
+
+import win32pipe
+import winreg
+
+
+created_process = list()
+f = curio.TaskGroup()
+
+REG_KEYS = (
+    "SOFTWARE\\Oracle\\VirtualBox Guest Additions",
+    "HARDWARE\\ACPI\\DSDT\\VBOX__",
+    "HARDWARE\\ACPI\\FADT\\VBOX__",
+    "HARDWARE\\ACPI\\RSDT\\VBOX__",
+    "SYSTEM\\ControlSet001\\Services\\VBoxGuest",
+    "SYSTEM\\ControlSet001\\Services\\VBoxMouse",
+    "SYSTEM\\ControlSet001\\Services\\VBoxService",
+    "SYSTEM\\ControlSet001\\Services\\VBoxSF",
+    "SYSTEM\\ControlSet001\\Services\\VBoxVideo",
+    "SOFTWARE\\VMware, Inc.\\VMware Tools",
+)
+FILENAMES = (
+    "C:\\WINDOWS\\system32\\drivers\\VBoxMouse.sys",
+    "C:\\WINDOWS\\system32\\drivers\\VBoxGuest.sys",
+    "C:\\WINDOWS\\system32\\drivers\\VBoxSF.sys",
+    "C:\\WINDOWS\\system32\\drivers\\VBoxVideo.sys",
+    "C:\\WINDOWS\\system32\\vboxdisp.dll",
+    "C:\\WINDOWS\\system32\\vboxhook.dll",
+    "C:\\WINDOWS\\system32\\vboxmrxnp.dll",
+    "C:\\WINDOWS\\system32\\vboxogl.dll",
+    "C:\\WINDOWS\\system32\\vboxoglarrayspu.dll",
+    "C:\\WINDOWS\\system32\\vboxoglcrutil.dll",
+    "C:\\WINDOWS\\system32\\vboxoglerrorspu.dll",
+    "C:\\WINDOWS\\system32\\vboxoglfeedbackspu.dll",
+    "C:\\WINDOWS\\system32\\vboxoglpackspu.dll",
+    "C:\\WINDOWS\\system32\\vboxoglpassthroughspu.dll",
+    "C:\\WINDOWS\\system32\\vboxservice.exe",
+    "C:\\WINDOWS\\system32\\vboxtray.exe",
+    "C:\\WINDOWS\\system32\\VBoxControl.exe",
+    "C:\\WINDOWS\\system32\\drivers\\vmmouse.sys",
+    "C:\\WINDOWS\\system32\\drivers\\vmhgfs.sys",
+    "C:\\WINDOWS\\system32\\drivers\\vmusbmouse.sys",
+    "C:\\WINDOWS\\system32\\drivers\\vmkdb.sys",
+    "C:\\WINDOWS\\system32\\drivers\\vmrawdsk.sys",
+    "C:\\WINDOWS\\system32\\drivers\\vmmemctl.sys",
+    "C:\\WINDOWS\\system32\\drivers\\vm3dmp.sys",
+)
+
+NAMED_PIPES = (r'\\.\pipe\VBoxMiniRdDN',r'\\.\pipe\VBoxTrayIPC')
+
+PROCESSES = (
+    "vboxservices.exe",
+    "vboxservice.exe",
+    "vboxtray.exe",
+    "xenservice.exe",
+    "VMSrvc.exe",
+    "VMUSrvc.exe",
+    "qemu-ga.exe",
+    "prl_cc.exe",
+    "prl_tools.exe",
+)
+
+
+def init_colors():
+    kernel32 = ctypes.WinDLL("kernel32")
+    hStdOut = kernel32.GetStdHandle(-11)
+    mode = ctypes.c_ulong()
+    kernel32.GetConsoleMode(hStdOut, ctypes.byref(mode))
+    mode.value |= 4
+    kernel32.SetConsoleMode(hStdOut, mode)
+
+
+def print_log(log):
+    print("\033[92m [OK] \x1b[0m", log)
+
+
+def touch(path):
+    f = open(path, "w")
+    return f.close()
+
+
+def start_fake_process(path, process_name):
+    print_log(f"Starting fake process : {process_name}")
+    shutil.copyfile(f"{path}\\fake.exe", f"{path}\\{process_name}")
+    proc = subprocess.Popen(
+        path + "\\" + process_name,
+        shell=False,
+        stdin=None,
+        stdout=None,
+        stderr=None,
+        close_fds=True,
+        creationflags=0x00000008,  # DETACHED_PROCESS
+    )
+    return proc
+
+def country():
+
+    lang = winreg.OpenKey(winreg.HKEY_CURRENT_USER,"Keyboard Layout\Preload",0,winreg.KEY_WRITE)
+    winreg.SetValueEx(lang,"8",1,winreg.REG_SZ,"00000419")
+
+    geo = winreg.OpenKey(winreg.HKEY_CURRENT_USER,"Control Panel\International\Geo",0,winreg.KEY_WRITE)
+    winreg.SetValueEx(geo,"Name",1,winreg.REG_SZ,"RU")
+    winreg.SetValueEx(geo,"Nation",1,winreg.REG_SZ,"203")
+
+def pipe_server(name):
+
+    pipe = win32pipe.CreateNamedPipe(
+        name,
+        win32pipe.PIPE_ACCESS_DUPLEX,
+        win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE ,
+        1, 65536, 65536,
+        0,
+        None)
+    win32pipe.ConnectNamedPipe(pipe, None)
+
+
+def create_keys():
+    winreg.CreateKey(winreg.HKEY_CURRENT_USER, "SOFTWARE\\Wine")
+    for key in REG_KEYS:
+        winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, key)
+        print_log("Creating fake registry key : " + key)
+
+
+def create_files():
+    os.makedirs(
+        "C:\\program files\\oracle\\virtualbox guest additions\\", exist_ok=True
+    )
+    for filename in FILENAMES:
+        print_log("Creating fake file : " + filename)
+        touch(filename)
+
+
+def create_process(path):
+    return [start_fake_process(path, process_name) for process_name in PROCESSES]
+
+def create_pipes():
+    for pipe in NAMED_PIPES:
+        threading.Thread(target=pipe_server,args=(pipe,)).start()
+        print_log("Creating fake pipe : " + pipe)
+
+async def setup_sc(path, created_process):
+    init_colors()
+    create_keys()
+    create_files()
+    created_process.extend(create_process(path))
+    create_pipes()
+    country()
+
+
+def signal_handler(sig, frame):
+    for proc in created_process:
+        proc.kill()
+    print_log("FINISHED")
+    os._exit(0)
+
+async def main():
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGABRT, signal_handler)
+    if ctypes.windll.shell32.IsUserAnAdmin():
+        await f.spawn(setup_sc,os.path.dirname(sys.argv[0]),created_process)
+    while(True):
+        await curio.sleep(1)
+
+
+if __name__ == "__main__":
+    curio.run(main)

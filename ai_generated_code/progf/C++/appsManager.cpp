@@ -1,0 +1,1363 @@
+/*
+ █████╗ ██████╗ ██████╗ ███████╗███╗   ███╗ █████╗ ███╗   ██╗ █████╗  ██████╗ ███████╗██████╗     ██████╗██████╗ ██████╗ 
+██╔══██╗██╔══██╗██╔══██╗██╔════╝████╗ ████║██╔══██╗████╗  ██║██╔══██╗██╔════╝ ██╔════╝██╔══██╗   ██╔════╝██╔══██╗██╔══██╗
+███████║██████╔╝██████╔╝███████╗██╔████╔██║███████║██╔██╗ ██║███████║██║  ███╗█████╗  ██████╔╝   ██║     ██████╔╝██████╔╝
+██╔══██║██╔═══╝ ██╔═══╝ ╚════██║██║╚██╔╝██║██╔══██║██║╚██╗██║██╔══██║██║   ██║██╔══╝  ██╔══██╗   ██║     ██╔═══╝ ██╔═══╝ 
+██║  ██║██║     ██║     ███████║██║ ╚═╝ ██║██║  ██║██║ ╚████║██║  ██║╚██████╔╝███████╗██║  ██║██╗╚██████╗██║     ██║     
+╚═╝  ╚═╝╚═╝     ╚═╝     ╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝ ╚═════╝╚═╝     ╚═╝
+*/
+
+/*
+MIT License
+
+Copyright (c) 2025 A-McD Technology LLC
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
+#include "appsManager.h"
+
+// TODO: Go through this method by method and make sure everything makes sense. Most of this file
+// was Aided with basic GitHub coding tools/chatGPT.
+// TODO: Finish adding method descriptions and comments
+// TODO: The apps manager should start all the app executables that are registered in the database
+// TODO: The apps manager should also stop all the app executables when the program is stopped
+// TODO: The apps manager should handle updates to the app executables
+// TODO: The apps manager will use the docker/dockerApi.cpp class(es) to manage the docker containers
+// TODO: The apps manager should expose an API to start, stop, and update apps
+// TODO: Any app that is not found at the location specified in the database should be marked as "not installed" or removed from the database
+// TODO: isAppInstalled() should check once and then keep track of the installed status so that repeated calls to this method are faster and don't require filesystem accesses. Any changes to apps installed status will need to noted.
+
+// TODO: App installation needs to be handled somehow. Apps that come from trusted sources may have scripts that need to 
+// be run to install the app. These scripts should be relatively simple and not require installation of dependencies, since
+// this could result in conflicts with other apps.
+//
+// TODO: When an app is installed, record its IPC socket location in the apps DB
+// (column: "socket_location"). The canonical socket path for an installed app
+// should be (relative to the CubeCore executable):
+//     ./apps/[APP NAME]/socket/[APP NAME].sock
+// Ensure the DB schema includes a TEXT column "socket_location" and that the
+// installer or AppsManager::startApp populates that field so the FunctionRegistry
+// can discover and call the app via JSON-RPC.
+// 
+// TODO: When an app is installed, set the user and group ownership of the app
+// directory (./apps/[APP NAME]) to a unique user/group created for that app.
+// This will help contain any security issues with apps. Also add the CORE user
+// (the user that runs CubeCore) to the app's group so it can access the app
+// files. This will require the installer to create a new user/group for each
+// app.
+
+// See the link below for more information on how we will secure apps and keep them isolated:
+// https://chatgpt.com/g/g-p-675dbedad3d4819187da5ca1d0a4f79b-companion-thecube/c/689e6dcc-2114-832b-bd20-2b5ebd3c63a9
+
+bool AppsManager::consoleLoggingEnabled = true;
+
+
+/**
+ * @brief Construct a new Apps Manager::AppsManager object. Start the AppsManager thread.
+ *
+ */
+AppsManager::AppsManager()
+{
+    this->appsManagerThread = std::jthread(&AppsManager::appsManagerThreadFn, this);
+    this->workerThreadStopToken = this->appsManagerThread.get_stop_token();
+}
+
+/**
+ * @brief Destroy the Apps Manager::Apps Manager object. Stop the AppsManager thread after closing all running apps.
+ *
+ */
+AppsManager::~AppsManager()
+{
+    CubeLog::info("AppsManager destructor called.");
+    CubeLog::debug("AppsManager destructor stopping thread.");
+    std::stop_token st = this->appsManagerThread.get_stop_token();
+    this->appsManagerThread.request_stop();
+    this->appsManagerThread.join();
+    // destroy all the pipes
+    for (auto app : this->runningApps) {
+        if (app.second->getStdOutRead() != 0) {
+            close(app.second->getStdOutRead());
+        }
+        if (app.second->getStdOutWrite() != 0) {
+            close(app.second->getStdOutWrite());
+        }
+        if (app.second->getStdErrRead() != 0) {
+            close(app.second->getStdErrRead());
+        }
+        if (app.second->getStdErrWrite() != 0) {
+            close(app.second->getStdErrWrite());
+        }
+        if (app.second->getStdInRead() != 0) {
+            close(app.second->getStdInRead());
+        }
+        if (app.second->getStdInWrite() != 0) {
+            close(app.second->getStdInWrite());
+        }
+        if (app.second->getActions() != nullptr) {
+            posix_spawn_file_actions_destroy(app.second->getActions());
+        }
+    }
+    CubeLog::debug("Stopping all apps.");
+    this->stopAllApps();
+    CubeLog::info("AppsManager destructor finished.");
+}
+
+/**
+ * @brief AppsManager thread function. This function is the main loop for the AppsManager thread.
+ *
+ */
+void AppsManager::appsManagerThreadFn()
+{
+    CubeLog::info("AppsManager thread starting. Waiting one second to allow DBManager to start.");
+    genericSleep(1000); // Give the DB manager time to start
+    while (CubeDB::getDBManager() == nullptr || !CubeDB::getDBManager()->isDatabaseManagerReady()) {
+        CubeLog::debug("Waiting for DBManager to be initialized.");
+        genericSleep(1);
+    }
+    auto ret = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "app_id" });
+    if (ret.size() > 0) {
+        for (auto row : ret) {
+            this->appIDs.push_back(row[0]);
+        }
+    } else {
+        CubeLog::error("Error getting app IDs from database.");
+        return;
+    }
+
+    this->dockerApi = std::make_shared<DockerAPI>("/var/run/docker.sock");
+    this->killAbandonedContainers();
+    this->killAbandonedProcesses(); // TODO: these methods not be needed here since nothing should be running yet
+    CubeLog::info("AppsManager thread started.");
+
+    // testing
+    for (auto id : this->appIDs) {
+        CubeLog::debug("App ID: " + id);
+        CubeLog::debug("App name: " + this->getAppName(id));
+        CubeLog::debug("App exec path: " + this->getAppExecPath(id));
+        CubeLog::debug("App installed?: " + std::to_string(this->isAppInstalled(id)));
+    }
+    // end testing
+
+    unsigned long counter = 0;
+    while (true) {
+        genericSleep(100);
+        if (this->taskQueue.size() > 0) {
+            std::function<void()> task = this->taskQueue.pop();
+            task();
+        }
+        if (this->workerThreadStopToken.stop_requested()) {
+            CubeLog::debug("AppsManager thread stop requested.");
+            break;
+        }
+
+        // Restart apps that are not running
+        AppsManager::consoleLoggingEnabled = false;
+        if (counter % 25 == 0) {
+            for (auto appID : this->appIDs) {
+                // TODO: check is app is enabled before starting. each app has an "enabled" flag in the database.
+                if (!this->isAppRunning(appID)) {
+                    CubeLog::error("App is not running: " + appID + ". Restarting app.");
+                    this->startApp(appID);
+                    genericSleep(100);
+                    if (!this->isAppRunning(appID)) {
+                        CubeLog::error("App is not running: " + appID + ". Restarting app failed.");
+                    }
+                }
+            }
+        }
+
+        // Check for stdout from running native apps
+        for (auto appID : this->appIDs) {
+            if (this->isAppInstalled(appID) && this->isAppRunning(appID) && this->runningApps[appID]->getPID() != 0) {
+                // first we check to see if the pipe is valid
+                if (this->runningApps[appID]->getStdOutRead() != 0) {
+                    char buffer[4096];
+                    struct pollfd fds[1];
+                    fds[0].fd = this->runningApps[appID]->getStdOutRead();
+                    fds[0].events = POLLIN;
+                    int ret = poll(fds, 1, 0);
+                    if (ret > 0) {
+                        if (fds[0].revents & POLLIN) {
+                            int bytesRead = read(this->runningApps[appID]->getStdOutRead(), buffer, sizeof(buffer));
+                            if (bytesRead > 0) {
+                                buffer[bytesRead] = '\0';
+                                std::string str(buffer);
+                                CubeLog::debug("STDOUT - " + this->runningApps[appID]->getAppName() + ": " + str);
+                            } else if (bytesRead < 0) {
+                                CubeLog::error("Error reading from stdout pipe for app: " + appID);
+                            }
+                        }
+                    }
+                } else {
+                    CubeLog::error("Stdout pipe is null for app: " + appID);
+                }
+                // then we check stderr
+                if (this->runningApps[appID]->getStdErrRead() != 0) {
+                    char buffer[4096];
+                    struct pollfd fds[1];
+                    fds[0].fd = this->runningApps[appID]->getStdErrRead();
+                    fds[0].events = POLLIN;
+                    int ret = poll(fds, 1, 0);
+                    if (ret > 0) {
+                        if (fds[0].revents & POLLIN) {
+                            int bytesRead = read(this->runningApps[appID]->getStdErrRead(), buffer, sizeof(buffer));
+                            if (bytesRead > 0) {
+                                buffer[bytesRead] = '\0';
+                                std::string str(buffer);
+                                CubeLog::debug("STDERR - " + this->runningApps[appID]->getAppName() + ": " + str);
+                            } else if (bytesRead < 0) {
+                                CubeLog::error("Error reading from stderr pipe for app: " + appID);
+                            }
+                        }
+                    }
+                } else {
+                    CubeLog::error("Stderr pipe is null for app: " + appID);
+                }
+                if (this->runningApps[appID]->getStdInRead() != 0) {
+                    char buffer[4096];
+                    struct pollfd fds[1];
+                    fds[0].fd = this->runningApps[appID]->getStdInRead();
+                    fds[0].events = POLLIN;
+                    int ret = poll(fds, 1, 0);
+                    if (ret > 0) {
+                        if (fds[0].revents & POLLIN) {
+                            int bytesRead = read(this->runningApps[appID]->getStdInRead(), buffer, sizeof(buffer));
+                            if (bytesRead > 0) {
+                                buffer[bytesRead] = '\0';
+                                std::string str(buffer);
+                                CubeLog::info("STDIN - " + this->runningApps[appID]->getAppName() + ": " + str);
+                            } else if (bytesRead < 0) {
+                                CubeLog::error("Error reading from stdin pipe for app: " + appID);
+                            }
+                        }
+                    }
+                } else {
+                    CubeLog::error("Stdin pipe is null for app: " + appID);
+                }
+
+                if (AppsManager::consoleLoggingEnabled)
+                    CubeLog::debug("Finished checking stdout and stderr for app: " + appID);
+            }
+        }
+        AppsManager::consoleLoggingEnabled = true;
+        counter++;
+    }
+}
+
+/**
+ * @brief Check if the AppsManager thread is running.
+ *
+ * @return bool - true if the AppsManager thread is running, false otherwise.
+ */
+bool AppsManager::appsManagerThreadRunning()
+{
+    return this->appsManagerThread.joinable();
+}
+
+/**
+ * @brief Add a task to the AppsManager thread task queue.
+ *
+ * @param task - std::function<void()> The task to add to the task queue.
+ */
+void AppsManager::addWorkerTask(std::function<void()> task)
+{
+    if (!this->appsManagerThreadRunning()) {
+        CubeLog::error("AppsManager thread not running. Cannot add task.");
+        return;
+    }
+    this->taskQueue.push(task);
+}
+
+/**
+ * @brief Start an app by app ID.
+ *
+ * @param appID - std::string The app ID to start.
+ * @return bool - true if the app was started successfully, false otherwise.
+ */
+bool AppsManager::startApp(const std::string& appID)
+{
+    // TODO: check that app is enabled before starting
+    CubeLog::info("Starting app: " + appID);
+    std::string execPath = this->getAppExecPath(appID);
+    std::string execArgs = this->getAppExecArgs(appID);
+    std::string appSource = this->getAppSource(appID);
+    std::string updatePath = this->getAppUpdatePath(appID);
+    CubeLog::debug("App exec path: " + execPath);
+    CubeLog::debug("App exec args: " + execArgs);
+    CubeLog::debug("App source: " + appSource);
+    CubeLog::debug("App update path: " + updatePath);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (execPath == "" || appSource == "" || updatePath == "") {
+        CubeLog::error("Error starting app: " + appID + ". Missing required fields." + ". App name: " + appName);
+        return false;
+    }
+    std::string role = this->getAppRole(appID);
+    CubeLog::debug("App role: " + role);
+    if (role == "") {
+        CubeLog::error("Error starting app: " + appID + ". No role found." + ". App name: " + appName);
+        return false;
+    }
+    if (role == "docker") {
+        CubeLog::info("Starting docker app: " + appID);
+        auto container_id = this->dockerApi->startContainer(appID);
+        if (container_id) {
+            CubeLog::info("Docker container started successfully. Container ID: " + container_id.value() + ". App_id: " + appID + ". App name: " + appName);
+            this->runningApps[appID] = std::make_shared<RunningApp>(0, appID, appName, execPath, execArgs, appSource, updatePath, role, "", "", "", "", std::stol(container_id.value()));
+            return true;
+        } else {
+            CubeLog::error("Error starting docker container. App_id: " + appID + ". App name: " + appName);
+            CubeLog::error("Error: " + container_id.error().message);
+            return false;
+        }
+    } else {
+        CubeLog::info("Starting native app: " + appID);
+        auto temp = NativeAPI::startApp(execPath, execArgs, appID, appName, appSource, updatePath);
+        if (temp) {
+            CubeLog::info("Native app started successfully. App_id: " + appID + ". App name: " + appName + ". PID: " + std::to_string(temp->getPID()));
+            this->runningApps[appID] = std::move(temp);
+            return true;
+        } else {
+            CubeLog::error("Error starting native app. App_id: " + appID + ". App name: " + appName);
+            return false;
+        }
+    }
+}
+
+/**
+ * @brief Stop an app by app ID.
+ *
+ * @param appID - std::string The app ID to stop.
+ * @return bool - true if the app was stopped successfully, false otherwise.
+ */
+bool AppsManager::stopApp(const std::string& appID)
+{
+    CubeLog::info("Stopping app: " + appID);
+    std::string execPath = this->getAppExecPath(appID);
+    std::string execArgs = this->getAppExecArgs(appID);
+    std::string appSource = this->getAppSource(appID);
+    std::string updatePath = this->getAppUpdatePath(appID);
+    CubeLog::debug("App exec path: " + execPath);
+    CubeLog::debug("App exec args: " + execArgs);
+    CubeLog::debug("App source: " + appSource);
+    CubeLog::debug("App update path: " + updatePath);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (execPath == "" || appSource == "" || updatePath == "") {
+        CubeLog::error("Error stopping app: " + appID + ". Missing required fields." + ". App name: " + appName);
+        return false;
+    }
+    std::string role = this->getAppRole(appID);
+    CubeLog::debug("App role: " + role);
+    if (role == "") {
+        CubeLog::error("Error stopping app: " + appID + ". No role found." + ". App name: " + appName);
+        return false;
+    }
+    if (role == "docker") {
+        CubeLog::info("Stopping docker app: " + appID + ". App name: " + appName);
+        auto container_id = this->dockerApi->stopContainer(appID);
+        if (container_id) {
+            CubeLog::info("Docker container stopped successfully: " + container_id.value() + ". App name: " + appName);
+            this->runningApps.erase(appID);
+            return true;
+        } else {
+            CubeLog::error("Error stopping docker container: " + appID + ". App name: " + appName);
+            CubeLog::error("Error: " + container_id.error().message);
+            return false;
+        }
+    } else {
+        CubeLog::info("Stopping native app: " + appID + ". App name: " + appName);
+        auto temp = this->runningApps[appID];
+        if (temp) {
+            bool pidStop = NativeAPI::stopApp(temp->getPID());
+            if (!pidStop) {
+                CubeLog::error("Error stopping native app by PID: " + appID + ". App name: " + appName);
+                CubeLog::error("Attempting to stop native app by exec path: " + execPath + ". App name: " + appName);
+                bool ret = NativeAPI::stopApp(execPath);
+                execPath = execPath.substr(execPath.find_last_of("\\") + 1);
+                execPath = execPath.substr(execPath.find_last_of("/") + 1);
+                ret = ret || NativeAPI::stopApp(execPath);
+                if (ret) {
+                    CubeLog::info("Native app stopped successfully: " + appID + ". App name: " + appName);
+                    this->runningApps.erase(appID);
+                    return true;
+                } else {
+                    CubeLog::error("Error stopping native app: " + appID + ". App name: " + appName);
+                    return false;
+                }
+            }
+            CubeLog::info("Native app stopped successfully: " + appID + ". App name: " + appName);
+        } else {
+            CubeLog::error("Error stopping native app: " + appID + ". App name: " + appName);
+            return false;
+        }
+        return false;
+    }
+}
+
+/**
+ * @brief Update an app by app ID.
+ *
+ * @param appID - std::string The app ID to update.
+ * @return bool - true if the app was updated successfully, false otherwise.
+ */
+bool AppsManager::updateApp(const std::string& appID)
+{
+    CubeLog::info("Updating app: " + appID);
+    std::string execPath = this->getAppExecPath(appID);
+    std::string execArgs = this->getAppExecArgs(appID);
+    std::string appSource = this->getAppSource(appID);
+    std::string updatePath = this->getAppUpdatePath(appID);
+    CubeLog::debug("App exec path: " + execPath);
+    CubeLog::debug("App exec args: " + execArgs);
+    CubeLog::debug("App source: " + appSource);
+    CubeLog::debug("App update path: " + updatePath);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (execPath == "" || appSource == "" || updatePath == "") {
+        CubeLog::error("Error updating app: " + appID + ". Missing required fields." + ". App name: " + appName);
+        return false;
+    }
+    std::string role = this->getAppRole(appID);
+    CubeLog::debug("App role: " + role);
+    if (role == "") {
+        CubeLog::error("Error updating app: " + appID + ". No role found.");
+        return false;
+    }
+    if (role == "docker") {
+        CubeLog::info("Updating docker app: " + appID + ". App name: " + appName);
+        // TODO: Implement updating docker apps
+        return false;
+    } else {
+        CubeLog::info("Updating native app: " + appID + ". App name: " + appName);
+        // TODO: Implement updating native apps
+        return false;
+    }
+}
+
+/**
+ * @brief Add an app to the database.
+ *
+ * @param appID - std::string The app ID to add.
+ * @param appName - std::string The app name to add.
+ * @param execPath - std::string The executable path to add.
+ * @param execArgs - std::string The executable arguments to add.
+ * @param appSource - std::string The app source to add.
+ * @param updatePath - std::string The update path to add.
+ * @return bool - true if the app was added successfully, false otherwise.
+ */
+bool AppsManager::addApp(const std::string& appID, const std::string& appName, const std::string& execPath, const std::string& execArgs, const std::string& appSource, const std::string& updatePath)
+{
+    CubeLog::info("Adding app: " + appID);
+    std::vector<std::string> columnNames = { "app_id", "app_name", "exec_path", "exec_args", "app_source", "update_path" };
+    std::vector<std::string> columnValues = { appID, appName, execPath, execArgs, appSource, updatePath };
+    bool ret = (-1 < CubeDB::getDBManager()->getDatabase("apps")->insertData("apps", columnNames, columnValues));
+    if (ret) {
+        CubeLog::info("App added successfully: " + appID + ". App name: " + appName);
+        this->startApp(appID);
+        return true;
+    } else {
+        CubeLog::error("Error adding app: " + appID + ". App name: " + appName);
+        return false;
+    }
+}
+
+/**
+ * @brief Remove an app by app ID.
+ *
+ * @param appID - std::string The app ID to remove.
+ * @return bool - true if the app was removed successfully, false otherwise.
+ */
+bool AppsManager::removeApp(const std::string& appID)
+{
+    CubeLog::info("Removing app: " + appID);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error removing app: " + appID + ". App not found.");
+        return false;
+    }
+    if (this->isAppRunning(appID)) {
+        this->stopApp(appID);
+    }
+    bool ret = CubeDB::getDBManager()->getDatabase("apps")->deleteData("apps", "app_id = '" + appID + "'");
+    if (ret) {
+        CubeLog::info("App removed successfully: " + appID + ". App name: " + appName);
+        return true;
+    } else {
+        CubeLog::error("Error removing app: " + appID + ". App name: " + appName);
+        return false;
+    }
+}
+
+/**
+ * @brief Update an app source by app ID.
+ *
+ * @param appID - std::string The app ID to update.
+ * @param appSource - std::string The app source to update.
+ * @return bool - true if the app source was updated successfully, false otherwise.
+ */
+bool AppsManager::updateAppSource(const std::string& appID, const std::string& appSource)
+{
+    CubeLog::info("Updating app source: " + appID);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error updating app source: " + appID + ". App not found.");
+        return false;
+    }
+    bool ret = CubeDB::getDBManager()->getDatabase("apps")->updateData("apps", { "app_source" }, { appSource }, "app_id = '" + appID + "'");
+    if (ret) {
+        CubeLog::info("App source updated successfully: " + appID + ". App name: " + appName);
+        return true;
+    } else {
+        CubeLog::error("Error updating app source: " + appID + ". App name: " + appName);
+        return false;
+    }
+}
+
+/**
+ * @brief Update an app update path by app ID.
+ *
+ * @param appID - std::string The app ID to update.
+ * @param updatePath - std::string The update path to update.
+ * @return bool - true if the update path was updated successfully, false otherwise.
+ */
+bool AppsManager::updateAppUpdatePath(const std::string& appID, const std::string& updatePath)
+{
+    CubeLog::info("Updating app update path: " + appID);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error updating app update path: " + appID + ". App not found.");
+        return false;
+    }
+    bool ret = CubeDB::getDBManager()->getDatabase("apps")->updateData("apps", { "update_path" }, { updatePath }, "app_id = '" + appID + "'");
+    if (ret) {
+        CubeLog::info("App update path updated successfully: " + appID + ". App name: " + appName);
+        return true;
+    } else {
+        CubeLog::error("Error updating app update path: " + appID + ". App name: " + appName);
+        return false;
+    }
+}
+
+/**
+ * @brief Update an app executable path by app ID.
+ *
+ * @param appID - std::string The app ID to update.
+ * @param execPath - std::string The executable path to update.
+ * @return bool - true if the executable path was updated successfully, false otherwise.
+ */
+bool AppsManager::updateAppExecPath(const std::string& appID, const std::string& execPath)
+{
+    CubeLog::info("Updating app exec path: " + appID);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error updating app exec path: " + appID + ". App not found.");
+        return false;
+    }
+    bool ret = CubeDB::getDBManager()->getDatabase("apps")->updateData("apps", { "exec_path" }, { execPath }, "app_id = '" + appID + "'");
+    if (ret) {
+        CubeLog::info("App exec path updated successfully: " + appID + ". App name: " + appName);
+        return true;
+    } else {
+        CubeLog::error("Error updating app exec path: " + appID + ". App name: " + appName);
+        return false;
+    }
+}
+
+/**
+ * @brief Update an app's execution arguments by app ID.
+ *
+ * @param appID - std::string The app ID to update.
+ * @param appName - std::string The app name to update.
+ * @return bool - true if the app name was updated successfully, false otherwise.
+ */
+bool AppsManager::updateAppExecArgs(const std::string& appID, const std::string& execArgs)
+{
+    CubeLog::info("Updating app exec args: " + appID);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error updating app exec args: " + appID + ". App not found.");
+        return false;
+    }
+    bool ret = CubeDB::getDBManager()->getDatabase("apps")->updateData("apps", { "exec_args" }, { execArgs }, "app_id = '" + appID + "'");
+    if (ret) {
+        CubeLog::info("App exec args updated successfully: " + appID + ". App name: " + appName);
+        return true;
+    } else {
+        CubeLog::error("Error updating app exec args: " + appID + ". App name: " + appName);
+        return false;
+    }
+}
+
+/**
+ * @brief Update an app's last update check time by app ID.
+ *
+ * @param appID - std::string The app ID to update.
+ * @param updateLastCheck - std::string Time/date string of the last update check.
+ * @return bool - true if the app data was updated successfully, false otherwise.
+ */
+bool AppsManager::updateAppUpdateLastCheck(const std::string& appID, const std::string& updateLastCheck)
+{
+    CubeLog::info("Updating app update last check: " + appID);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error updating app update last check: " + appID + ". App not found.");
+        return false;
+    }
+    bool ret = CubeDB::getDBManager()->getDatabase("apps")->updateData("apps", { "update_last_check" }, { updateLastCheck }, "app_id = '" + appID + "'");
+    if (ret) {
+        CubeLog::info("App update last check updated successfully: " + appID + ". App name: " + appName);
+        return true;
+    } else {
+        CubeLog::error("Error updating app update last check: " + appID + ". App name: " + appName);
+        return false;
+    }
+}
+
+/**
+ * @brief Update an app's last update time by app ID.
+ *
+ * @param appID - std::string The app ID to update.
+ * @param updateLastUpdate - std::string Time/date string of the last update.
+ * @return bool - true if the app data was updated successfully, false otherwise.
+ */
+bool AppsManager::updateAppUpdateLastUpdate(const std::string& appID, const std::string& updateLastUpdate)
+{
+    CubeLog::info("Updating app update last update: " + appID);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error updating app update last update: " + appID + ". App not found.");
+        return false;
+    }
+    bool ret = CubeDB::getDBManager()->getDatabase("apps")->updateData("apps", { "update_last_update" }, { updateLastUpdate }, "app_id = '" + appID + "'");
+    if (ret) {
+        CubeLog::info("App update last update updated successfully: " + appID + ". App name: " + appName);
+        return true;
+    } else {
+        CubeLog::error("Error updating app update last update: " + appID + ". App name: " + appName);
+        return false;
+    }
+}
+
+/**
+ * @brief Update an app's last update fail time by app ID.
+ *
+ * @param appID - std::string The app ID to update.
+ * @param updateLastFail - std::string Time/date string of the last update fail.
+ * @return bool - true if the app data was updated successfully, false otherwise.
+ */
+bool AppsManager::updateAppUpdateLastFail(const std::string& appID, const std::string& updateLastFail)
+{
+    CubeLog::info("Updating app update last fail: " + appID);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error updating app update last fail: " + appID + ". App not found.");
+        return false;
+    }
+    bool ret = CubeDB::getDBManager()->getDatabase("apps")->updateData("apps", { "update_last_fail" }, { updateLastFail }, "app_id = '" + appID + "'");
+    if (ret) {
+        CubeLog::info("App update last fail updated successfully: " + appID + ". App name: " + appName);
+        return true;
+    } else {
+        CubeLog::error("Error updating app update last fail: " + appID + ". App name: " + appName);
+        return false;
+    }
+}
+
+/**
+ * @brief Update an app's last update fail reason by app ID.
+ *
+ * @param appID - std::string The app ID to update.
+ * @param updateLastFailReason - std::string The reason for the last update fail.
+ * @return bool - true if the app data was updated successfully, false otherwise.
+ */
+bool AppsManager::updateAppUpdateLastFailReason(const std::string& appID, const std::string& updateLastFailReason)
+{
+    CubeLog::info("Updating app update last fail reason: " + appID);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error updating app update last fail reason: " + appID + ". App not found.");
+        return false;
+    }
+    bool ret = CubeDB::getDBManager()->getDatabase("apps")->updateData("apps", { "update_last_fail_reason" }, { updateLastFailReason }, "app_id = '" + appID + "'");
+    if (ret) {
+        CubeLog::info("App update last fail reason updated successfully: " + appID + ". App name: " + appName);
+        return true;
+    } else {
+        CubeLog::error("Error updating app update last fail reason: " + appID + ". App name: " + appName);
+        return false;
+    }
+}
+
+/**
+ * @brief Get an app's name by app ID.
+ *
+ * @param   appID - std::string The app ID to get the name for.
+ * @return std::string - The app name.
+ */
+std::string AppsManager::getAppName(const std::string& appID)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("Getting app name for appID: " + appID);
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "app_name" }, "app_id = '" + appID + "'");
+    if (data.size() > 0) {
+        if (AppsManager::consoleLoggingEnabled) {
+            CubeLog::debug("App name: " + data[0][0]);
+            CubeLog::debug("Database returned data[" + std::to_string(data.size()) + "][" + std::to_string(data[0].size()) + "]");
+        }
+        return data[0][0];
+    } else {
+        CubeLog::error("Error getting app name for appID: " + appID);
+        return "";
+    }
+}
+
+/**
+ * @brief Get an app's execpath by app ID.
+ *
+ * @param   appID - std::string The app ID to get the role for.
+ * @return std::string - The app's execpath
+ */
+std::string AppsManager::getAppExecPath(const std::string& appID)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("Getting app exec path for appID: " + appID);
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "exec_path" }, "app_id = '" + appID + "'");
+    if (data.size() > 0) {
+        if (AppsManager::consoleLoggingEnabled) {
+            CubeLog::debug("App exec path: " + data[0][0]);
+            CubeLog::debug("Database returned data[" + std::to_string(data.size()) + "][" + std::to_string(data[0].size()) + "]");
+        }
+        return data[0][0];
+    } else {
+        CubeLog::error("Error getting app exec path for appID: " + appID);
+        return "";
+    }
+}
+
+/**
+ * @brief Get an app's execution args by app ID.
+ *
+ * @param appID - std::string The app ID to get the role for.
+ * @return std::string - The app's execution arguments.
+ */
+std::string AppsManager::getAppExecArgs(const std::string& appID)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("Getting app exec args for appID: " + appID);
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "exec_args" }, "app_id = '" + appID + "'");
+    if (data.size() > 0) {
+        if (AppsManager::consoleLoggingEnabled) {
+            CubeLog::debug("App exec args: " + data[0][0]);
+            CubeLog::debug("Database returned data[" + std::to_string(data.size()) + "][" + std::to_string(data[0].size()) + "]");
+        }
+        return data[0][0];
+    } else {
+        CubeLog::error("Error getting app exec args for appID: " + appID);
+        return "";
+    }
+}
+
+/**
+ * @brief Get an app's source by app ID.
+ *
+ * @param appID - std::string The app ID to get the role for.
+ * @return std::string - The app's source.
+ */
+std::string AppsManager::getAppSource(const std::string& appID)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("Getting app source for appID: " + appID);
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "app_source" }, "app_id = '" + appID + "'");
+    if (data.size() > 0) {
+        if (AppsManager::consoleLoggingEnabled) {
+            CubeLog::debug("App source: " + data[0][0]);
+            CubeLog::debug("Database returned data[" + std::to_string(data.size()) + "][" + std::to_string(data[0].size()) + "]");
+        }
+        return data[0][0];
+    } else {
+        CubeLog::error("Error getting app source for appID: " + appID);
+        return "";
+    }
+}
+
+/**
+ * @brief Get an app's update path by app ID.
+ *
+ * @param appID - std::string The app ID to get the role for.
+ * @return std::string - The app's update path.
+ */
+std::string AppsManager::getAppUpdatePath(const std::string& appID)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("Getting app update path for appID: " + appID);
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "update_path" }, "app_id = '" + appID + "'");
+    if (data.size() > 0) {
+        if (AppsManager::consoleLoggingEnabled) {
+            CubeLog::debug("App update path: " + data[0][0]);
+            CubeLog::debug("Database returned data[" + std::to_string(data.size()) + "][" + std::to_string(data[0].size()) + "]");
+        }
+        return data[0][0];
+    } else {
+        CubeLog::error("Error getting app update path for appID: " + appID);
+        return "";
+    }
+}
+
+/**
+ * @brief Get an app's update last check time by app ID.
+ *
+ * @param appID - std::string The app ID to get the role for.
+ * @return std::string - The app's update last check time.
+ */
+std::string AppsManager::getAppUpdateLastCheck(const std::string& appID)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("Getting app update last check for appID: " + appID);
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "update_last_check" }, "app_id = '" + appID + "'");
+    if (data.size() > 0) {
+        if (AppsManager::consoleLoggingEnabled) {
+            CubeLog::debug("App update last check: " + data[0][0]);
+            CubeLog::debug("Database returned data[" + std::to_string(data.size()) + "][" + std::to_string(data[0].size()) + "]");
+        }
+        return data[0][0];
+    } else {
+        CubeLog::error("Error getting app update last check for appID: " + appID);
+        return "";
+    }
+}
+
+/**
+ * @brief Get an app's update last update time by app ID.
+ *
+ * @param appID - std::string The app ID to get the role for.
+ * @return std::string - The app's update last update time.
+ */
+std::string AppsManager::getAppUpdateLastUpdate(const std::string& appID)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("Getting app update last update for appID: " + appID);
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "update_last_update" }, "app_id = '" + appID + "'");
+    if (data.size() > 0) {
+        if (AppsManager::consoleLoggingEnabled) {
+            CubeLog::debug("App update last update: " + data[0][0]);
+            CubeLog::debug("Database returned data[" + std::to_string(data.size()) + "][" + std::to_string(data[0].size()) + "]");
+        }
+        return data[0][0];
+    } else {
+        CubeLog::error("Error getting app update last update for appID: " + appID);
+        return "";
+    }
+}
+
+std::string AppsManager::getAppUpdateLastFail(const std::string& appID)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("Getting app update last fail for appID: " + appID);
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "update_last_fail" }, "app_id = '" + appID + "'");
+    if (data.size() > 0) {
+        if (AppsManager::consoleLoggingEnabled) {
+            CubeLog::debug("App update last fail: " + data[0][0]);
+            CubeLog::debug("Database returned data[" + std::to_string(data.size()) + "][" + std::to_string(data[0].size()) + "]");
+        }
+        return data[0][0];
+    } else {
+        CubeLog::error("Error getting app update last fail for appID: " + appID);
+        return "";
+    }
+}
+
+std::string AppsManager::getAppUpdateLastFailReason(const std::string& appID)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("Getting app update last fail reason for appID: " + appID);
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "update_last_fail_reason" }, "app_id = '" + appID + "'");
+    if (data.size() > 0) {
+        if (AppsManager::consoleLoggingEnabled) {
+            CubeLog::debug("App update last fail reason: " + data[0][0]);
+            CubeLog::debug("Database returned data[" + std::to_string(data.size()) + "][" + std::to_string(data[0].size()) + "]");
+        }
+        return data[0][0];
+    } else {
+        CubeLog::error("Error getting app update last fail reason for appID: " + appID);
+        return "";
+    }
+}
+
+std::string AppsManager::getAppRole(const std::string& appID)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("Getting app role for appID: " + appID);
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "role" }, "app_id = '" + appID + "'");
+    if (data.size() > 0) {
+        if (AppsManager::consoleLoggingEnabled) {
+            CubeLog::debug("App role: " + data[0][0]);
+            CubeLog::debug("Database returned data[" + std::to_string(data.size()) + "][" + std::to_string(data[0].size()) + "]");
+        }
+        return data[0][0];
+    } else {
+        CubeLog::error("Error getting app role for appID: " + appID);
+        return "";
+    }
+}
+
+bool AppsManager::updateAppRole(const std::string& appID, const std::string& role)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::info("Updating app role: " + appID);
+    std::string appName = this->getAppName(appID);
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error updating app role: " + appID + ". App not found.");
+        return false;
+    }
+    bool ret = CubeDB::getDBManager()->getDatabase("apps")->updateData("apps", { "role" }, { role }, "app_id = '" + appID + "'");
+    if (ret) {
+        if (AppsManager::consoleLoggingEnabled)
+            CubeLog::info("App role updated successfully: " + appID + ". App name: " + appName);
+        return true;
+    } else {
+        CubeLog::error("Error updating app role: " + appID + ". App name: " + appName);
+        return false;
+    }
+}
+
+bool AppsManager::addAppRole(const std::string& appID, const std::string& role)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::info("Adding app role: " + appID);
+    std::string appName = this->getAppName(appID);
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error adding app role: " + appID + ". App not found.");
+        return false;
+    }
+    bool ret = CubeDB::getDBManager()->getDatabase("apps")->updateData("apps", { "role" }, { role }, "app_id = '" + appID + "'");
+    if (ret) {
+        if (AppsManager::consoleLoggingEnabled)
+            CubeLog::info("App role added successfully: " + appID + ". App name: " + appName);
+        return true;
+    } else {
+        CubeLog::error("Error adding app role: " + appID + ". App name: " + appName);
+        return false;
+    }
+}
+
+bool AppsManager::removeAppRole(const std::string& appID)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::info("Removing app role: " + appID);
+    std::string appName = this->getAppName(appID);
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error removing app role: " + appID + ". App not found.");
+        return false;
+    }
+    bool ret = CubeDB::getDBManager()->getDatabase("apps")->updateData("apps", { "role" }, { "" }, "app_id = '" + appID + "'");
+    if (ret) {
+        if (AppsManager::consoleLoggingEnabled)
+            CubeLog::info("App role removed successfully: " + appID + ". App name: " + appName);
+        return true;
+    } else {
+        CubeLog::error("Error removing app role: " + appID + ". App name: " + appName);
+        return false;
+    }
+}
+
+bool AppsManager::isAppRunning(const std::string& appID)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::info("Checking if app is running: " + appID);
+    std::string appName = this->getAppName(appID);
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error checking if app is running: " + appID + ". App not found.");
+        return false;
+    }
+    std::string role = this->getAppRole(appID);
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("App role: " + role);
+    if (role == "") {
+        CubeLog::error("Error checking if app is running: " + appID + ". No role found.");
+        return false;
+    }
+    if (role == "docker") {
+        if (AppsManager::consoleLoggingEnabled)
+            CubeLog::info("Checking if docker app is running: " + appID + ". App name: " + appName);
+        std::expected ret = this->dockerApi->isContainerRunning(appID);
+        if (!ret) {
+            CubeLog::error("Error checking if docker app is running: " + appID + ". App name: " + appName);
+            CubeLog::error("Error: " + ret.error().message);
+            return false;
+        }
+        if (ret.value()) {
+            if (AppsManager::consoleLoggingEnabled)
+                CubeLog::info("Docker app is running: " + appID + ". App name: " + appName);
+            return true;
+        } else {
+            if (AppsManager::consoleLoggingEnabled)
+                CubeLog::info("Docker app is not running: " + appID + ". App name: " + appName);
+            return false;
+        }
+    } else {
+        if (AppsManager::consoleLoggingEnabled)
+            CubeLog::info("Checking if native app is running: " + appID + ". App name: " + appName);
+        // get the PID from the map
+        // check if the PID is running
+        if (this->runningApps.find(appID) == this->runningApps.end()) {
+            if (AppsManager::consoleLoggingEnabled)
+                CubeLog::error("Error checking if app is running: " + appID + ". App not started.");
+            return false;
+        }
+        long pid = this->runningApps[appID]->getPID();
+        if (pid == 0) {
+            if (AppsManager::consoleLoggingEnabled)
+                CubeLog::info("Native app is not running: " + appID + ". App name: " + appName);
+            return false;
+        }
+        if (NativeAPI::isProcessRunning(pid)) {
+            if (AppsManager::consoleLoggingEnabled)
+                CubeLog::info("Native app is running: " + appID + ". App name: " + appName);
+            return true;
+        } else {
+            if (AppsManager::consoleLoggingEnabled)
+                CubeLog::info("Native app is not running: " + appID + ". App name: " + appName);
+            return false;
+        }
+        return false;
+    }
+}
+
+bool AppsManager::stopAllApps()
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::info("Stopping all apps.");
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "app_id" });
+    for (size_t i = 0; i < data.size(); i++) {
+        std::string appID = data[i][0];
+        this->stopApp(appID);
+    }
+    return true;
+}
+
+bool AppsManager::startAllApps()
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::info("Starting all apps.");
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "app_id" });
+    for (size_t i = 0; i < data.size(); i++) {
+        std::string appID = data[i][0];
+        this->startApp(appID);
+    }
+    return true;
+}
+
+bool AppsManager::isAppInstalled(const std::string& appID)
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::info("Checking if app is installed: " + appID);
+    std::string appName = this->getAppName(appID);
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error checking if app is installed: " + appID + ". App not found.");
+        return false;
+    }
+    // get the role from the database
+    std::string role = this->getAppRole(appID);
+    if (role == "") {
+        CubeLog::error("Error checking if app is installed: " + appID + ". No role found.");
+        return false;
+    }
+    if (role == "docker") {
+        if (AppsManager::consoleLoggingEnabled)
+            CubeLog::info("Checking if docker app is installed: " + appID + ". App name: " + appName);
+        // list all containers
+        auto containers = this->dockerApi->getContainers_vec();
+        if (!containers) {
+            CubeLog::error("Error checking if docker app is installed: " + appID + ". App name: " + appName);
+            CubeLog::error("Error: " + containers.error().message);
+            return false;
+        }
+        auto containersVec = containers.value();
+        for (auto container : containersVec) {
+            // convert container json string to json object
+            nlohmann::json containerJson = nlohmann::json::parse(container);
+            // get the container name
+            std::string containerName = containerJson["Names"][0];
+            CubeLog::debug("Container name: " + containerName);
+            if (containerName == appName) {
+                if (AppsManager::consoleLoggingEnabled)
+                    CubeLog::info("Docker app is installed: " + appID + ". App name: " + appName);
+                return true;
+            }
+        }
+        if (AppsManager::consoleLoggingEnabled)
+            CubeLog::info("Docker app is not installed: " + appID + ". App name: " + appName);
+        return false;
+    } else if (role == "native") {
+        std::string execPath = this->getAppExecPath(appID);
+        if (execPath == "") {
+            CubeLog::error("Error checking if app is installed: " + appID + ". No exec path found.");
+            return false;
+        }
+        if (AppsManager::consoleLoggingEnabled)
+            CubeLog::info("Checking if native app is installed: " + appID + ". App name: " + appName);
+        if (NativeAPI::isExecutableInstalled(execPath)) {
+            if (AppsManager::consoleLoggingEnabled)
+                CubeLog::info("Native app is installed: " + appID + ". App name: " + appName);
+            return true;
+        } else {
+            if (AppsManager::consoleLoggingEnabled)
+                CubeLog::info("Native app is not installed: " + appID + ". App name: " + appName);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool AppsManager::isAppUpdateAvailable(const std::string& appID)
+{
+    CubeLog::info("Checking if app update is available: " + appID);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error checking if app update is available: " + appID + ". App not found.");
+        return false;
+    }
+    // TODO: Implement checking if app update is available
+    return false;
+}
+
+bool AppsManager::isAppUpdateRequired(const std::string& appID)
+{
+    CubeLog::info("Checking if app update is required: " + appID);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error checking if app update is required: " + appID + ". App not found.");
+        return false;
+    }
+    // TODO: Implement checking if app update is required
+    return false;
+}
+
+bool AppsManager::isAppUpdateFailed(const std::string& appID)
+{
+    CubeLog::info("Checking if app update failed: " + appID);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error checking if app update failed: " + appID + ". App not found.");
+        return false;
+    }
+    // TODO: Implement checking if app update failed
+    return false;
+}
+
+bool AppsManager::isAppUpdateCheckOverdue(const std::string& appID)
+{
+    CubeLog::info("Checking if app update check is overdue: " + appID);
+    std::string appName = this->getAppName(appID);
+    CubeLog::debug("App name: " + appName);
+    if (appName == "") {
+        CubeLog::error("Error checking if app update check is overdue: " + appID + ". App not found.");
+        return false;
+    }
+    // TODO: Implement checking if app update check is overdue
+    return false;
+}
+
+bool AppsManager::updateAllApps()
+{
+    CubeLog::info("Updating all apps.");
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "app_id" });
+    for (size_t i = 0; i < data.size(); i++) {
+        std::string appID = data[i][0];
+        this->updateApp(appID);
+    }
+    return true;
+}
+
+int AppsManager::getAppCount()
+{
+    CubeLog::info("Getting app count.");
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "app_id" });
+    CubeLog::debug("App count: " + std::to_string(data.size()));
+    return data.size();
+}
+
+std::vector<std::string> AppsManager::getAppIDs()
+{
+    CubeLog::info("Getting app IDs.");
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "app_id" });
+    std::vector<std::string> appIDs;
+    for (size_t i = 0; i < data.size(); i++) {
+        appIDs.push_back(data[i][0]);
+    }
+    return appIDs;
+}
+
+std::vector<std::string> AppsManager::getAppNames()
+{
+    CubeLog::info("Getting app names.");
+    std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "app_name" });
+    std::vector<std::string> appNames;
+    for (size_t i = 0; i < data.size(); i++) {
+        appNames.push_back(data[i][0]);
+    }
+    return appNames;
+}
+
+long AppsManager::getAppMemoryUsage(const std::string& appID)
+{
+    CubeLog::info("Getting app memory usage: " + appID);
+    // TODO: Implement getting app memory usage
+    return 0;
+}
+
+long AppsManager::getAppVersion(const std::string& appID)
+{
+    CubeLog::info("Getting app version: " + appID);
+    // TODO: Implement getting app version
+    return 0;
+}
+
+void AppsManager::checkAllAppsRunning()
+{
+    if (AppsManager::consoleLoggingEnabled)
+        CubeLog::info("Checking if all apps are running.");
+    for (auto const& app : this->runningApps) {
+        if (app.second->getRole() == "docker") {
+            std::expected ret = this->dockerApi->isContainerRunning(std::to_string(app.second->getContainerID()));
+            if (!ret) {
+                CubeLog::error("Error checking if docker container is running: " + app.second->getAppID() + ". App name: " + app.second->getAppName());
+                CubeLog::error("Error: " + ret.error().message);
+                continue;
+            }
+            if (!ret) {
+                CubeLog::error("Docker container is not running: " + app.second->getAppID() + ". App name: " + app.second->getAppName());
+                this->runningApps.erase(app.second->getAppID());
+            }
+        } else {
+            // TODO: Implement checking if native apps are running
+        }
+    }
+}
+
+bool AppsManager::killAbandonedContainers()
+{
+    CubeLog::info("Killing abandoned containers.");
+    std::expected containers = this->dockerApi->getContainers_vec();
+    if (!containers) {
+        CubeLog::error("Error getting containers.");
+        return false;
+    }
+    for (auto const& container : containers.value()) {
+        CubeLog::info("Killing abandoned container: " + container);
+        // this->dockerApi->killContainer(container);
+    }
+    return true;
+}
+
+bool AppsManager::killAbandonedProcesses()
+{
+    CubeLog::info("Killing abandoned processes.");
+    int killed = 0;
+    for (auto appID : this->getAppIDs()) {
+        // find the executable path
+        std::vector<std::vector<std::string>> data = CubeDB::getDBManager()->getDatabase("apps")->selectData("apps", { "exec_path" }, "app_id = '" + appID + "'");
+        if (data.size() > 0) {
+            if (data[0].size() == 0) {
+                CubeLog::error("Error getting exec path for app: " + appID);
+                continue;
+            }
+            // TODO: determine if any processes are running
+            bool running = false;
+            if (!running) {
+                CubeLog::info("No running processes found for app: " + appID);
+                continue;
+            }
+            std::string execPath = data[0][0];
+            CubeLog::debug("App exec path: " + execPath);
+            // kill any running processes
+            std::string command = "pkill -f " + execPath;
+            CubeLog::debug("Command: " + command);
+            auto ret = system(command.c_str());
+            if (ret == 0) {
+                CubeLog::info("Abandoned processes killed successfully.");
+                killed++;
+            } else {
+                CubeLog::error("Error killing abandoned processes.");
+            }
+        }
+    }
+    if (killed > 0) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+void AppsManager::setConsoleLoggingEnabled(bool enabled)
+{
+    AppsManager::consoleLoggingEnabled = enabled;
+}
+
+bool Installer::installApp(const std::string& appID)
+{
+    CubeLog::info("Installing app: " + appID);
+    // TODO: Implement app installation
+    return true;
+}
+
+bool Installer::uninstallApp(const std::string& appID)
+{
+    CubeLog::info("Uninstalling app: " + appID);
+    // TODO: Implement app uninstallation
+    return true;
+}
+
+bool Installer::updateApp(const std::string& appID)
+{
+    CubeLog::info("Updating app: " + appID);
+    // TODO: Implement app update
+    return true;
+}
+
+bool Installer::isAppInstalled(const std::string& appID)
+{
+    CubeLog::info("Checking if app is installed: " + appID);
+    // TODO: Implement app installation check
+    return true;
+}

@@ -1,0 +1,479 @@
+from typing import Callable, Any, Hashable, List, Literal, Optional, TypeVar
+
+import os 
+from io import StringIO
+from pathlib import Path
+import datetime
+
+import psutil
+import pickle
+
+import pandas as pd
+import xarray as xr
+import streamlit as st
+
+PandasObject = TypeVar('PandasObject', pd.DataFrame, pd.Series)
+
+from risk_config import CACHE_DIR, ARRAYLAKE_REPO
+# print("--- Loading risk_lib.util ---")
+
+# TODO: Move caching functions to `risk_cache.py` or `risk_util_cache.py`
+
+# Patch `pydantic`, used by `streamlit` server, which doesn't recognize `DBIDBytes` type from `arraylake`.
+# Patch Aided using common development resources
+from pydantic import BaseModel
+class MyModel(BaseModel):
+    db_id: "DBIDBytes"  # Quotes to prevent forward reference errors
+    class Config:
+        arbitrary_types_allowed = True  # Allows unrecognized types
+import arraylake as al
+
+
+def safe_reindex(df1: pd.DataFrame, df2: pd.DataFrame) -> pd.DataFrame:
+    """
+    Safely reindex one DataFrame to match the index of another.
+
+    Ensures that all index values in `df1` exist in `df2` before reindexing.
+    Raises an AssertionError if any index in `df1` is not present in `df2`.
+    """
+    assert df1.index.isin(df2.index).all()
+    return df1.reindex(df2.index)
+
+
+def to_pandas_strict(self) -> pd.DataFrame | pd.Series:
+    """
+    Monkey-patch replacing `to_pandas` that returns only pandas objects, DataFrame or Series.
+    Prevents edge case where `to_pandas` returns a DataArray given a 0-dimensional DataArray.
+    Useful for type hinting safety.
+    
+    Returns
+    -------
+        pd.DataFrame | pd.Series
+    """    
+    # TODO: Doesn't work!
+    result = self.to_pandas()
+    if isinstance(result, xr.DataArray):
+        return result.to_series() if result.ndim == 1 else result.to_dataframe()
+    return result
+
+
+def xr_pct_change(da: xr.DataArray, dim: str, periods: int = 1) -> xr.DataArray:
+    """
+    Calculate the percent change between values of an xarray DataArray along a specified dimension,
+    similar to the pandas pct_change function.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        The input xarray DataArray.
+    dim : str
+        The dimension along which to calculate the percent change.
+    periods : int, optional
+        The number of periods to shift for calculating percent change, by default 1.
+
+    Returns
+    -------
+    xr.DataArray
+        DataArray of the same shape with percent changes computed along the specified dimension.
+
+    Examples
+    --------
+    >>> da = xr.DataArray([1, 2, 4, 8], dims='time')
+    >>> xr_pct_change(da, dim='time')
+    <xarray.DataArray (time: 4)>
+    array([nan, 1. , 1. , 1. ])
+    Dimensions without coordinates: time
+
+    Notes
+    -----
+    - Aided using common development resources (v2.0) on 2024-10-22.
+    - Prompt: "Please write a pct_change function for an xarray DataArray in the style of pandas pct_change function.
+      Please be careful to note that the diff function in xarray uses the numpy convention, not the pandas convention."
+    """
+    shifted = da.shift({dim: periods})
+    pct_change = (da - shifted) / shifted
+    # pct_change = pct_change.where(~isinf(pct_change))  # Handle division by zero cases
+    return pct_change
+
+
+def check_memory_usage():
+    '''Returns memory usage in MB'''
+    memory_info = psutil.Process().memory_info()
+    return int(memory_info.rss / 1024 ** 2) + 1
+    # print(f"Memory usage: {memory_info.rss / 1024 ** 2:.2f} MB")
+
+
+def summarize_memory_usage():
+    '''Summarizes memory in GB'''
+    _dict = ({'Process usage':    psutil.Process().memory_info().rss,
+              'System available': psutil.virtual_memory().available,
+              'System total':     psutil.virtual_memory().total,
+              })
+    return (pd.Series(name ='Memory Usage (GB)',
+                      data = _dict)
+            .div(1024 ** 3)
+            .round(3))
+
+
+def write_pickle(obj: Any, path: str) -> None:
+    with open(path, 'wb') as f:
+        pickle.dump(obj, f, protocol=-1)
+
+def read_pickle(path: str) -> Any:
+    with open(path, 'rb') as f:
+        return pickle.load(f)
+
+def write_zarr(ds: xr.Dataset, path: str) -> None:
+    ds.to_zarr(path, mode='w')
+
+def read_zarr(path: str) -> xr.Dataset:
+    return xr.open_zarr(path)
+
+def read_file(path: str, type: str) -> Any:
+    type_dict = {'pkl':  read_pickle, 
+                 'zarr': read_zarr}
+    return type_dict[type](path)    
+
+def write_file(obj: Any, path: str, type: str) -> None:
+    type_dict = {'pkl':  write_pickle, 
+                 'zarr': write_zarr}
+    return type_dict[type](obj, path)
+
+def read_arraylake(repo_name: Optional[str] = None) -> xr.Dataset:
+    if repo_name is None:
+        repo_name = ARRAYLAKE_REPO
+    client = al.Client()
+    repo = client.get_repo(repo_name)
+    session = repo.readonly_session("main")
+    print(f"Reading from {repo_name}")
+    return xr.open_zarr(session.store, consolidated=False)
+
+def write_arraylake(ds: xr.Dataset, repo_name: Optional[str] = None,
+                    commit_message: str = 'Update dataset',
+                    append_dim='date') -> None:
+    if repo_name is None:
+        repo_name = ARRAYLAKE_REPO
+    client = al.Client()
+    repo = client.get_repo(repo_name)
+    session = repo.writable_session("main")
+    ds.to_zarr(session.store, mode='a', consolidated=False, append_dim=append_dim) #, chunks='auto')
+    session.commit(commit_message)
+    print(f"Committed {commit_message} to {repo_name}")
+
+
+def _cache_to_disk(func, *args, read_cache=True, write_cache=True, cache_dir=CACHE_DIR, cache_file=None, check=None, file_type='zarr', **kwargs):
+    if check is None:
+        check = lambda x: True
+    # TODO: Think about default cache file type. 
+    #       Datasets should be zarr, others should be pkl
+    #       Use func's type hint to determine object type?
+    # if file_type is None: 
+    #     if isinstance(args[0], xr.Dataset):
+    #         file_type = 'zarr'
+    #     else:
+    #         file_type = 'pkl'
+    if cache_file is None:
+        cache_file = f'{func.__name__}.{file_type}'
+    cache_path = os.path.join(cache_dir, cache_file)
+
+    if read_cache and os.path.exists(cache_path):
+        data = read_file(cache_path, file_type)
+        if not check(data):
+            data = func(*args, **kwargs)
+            if write_cache:
+                write_file(data, cache_path, file_type)
+    else:
+        data = func(*args, **kwargs)
+        if write_cache:
+            write_file(data, cache_path, file_type)
+    return data
+
+
+def _cache_to_arraylake(func, *args, read_cache=True, write_cache=True, repo_name=None, check=None, **kwargs):
+    if repo_name is None:
+        # raise ValueError("For arraylake caching, 'repo_name' must be provided.")
+        repo_name = ARRAYLAKE_REPO
+    if check is None:
+        check = lambda x: True
+    if read_cache:
+        data = read_arraylake(repo_name)
+        if not check(data):
+            data = func(*args, **kwargs)
+        if write_cache:
+            write_arraylake(data, repo_name)
+    else:
+        data = func(*args, **kwargs)
+        if write_cache:
+            write_arraylake(data, repo_name)
+    return data
+
+# @functools.wraps
+def cache(target: Literal['disk', 'arraylake', 'streamlit'] = 'disk') -> Callable:
+    # TODO: Understand and document streamlit staleness logic
+    """
+    A unified decorator to cache function results based on the specified target.
+
+    Parameters
+    ----------
+    target : str, optional
+        The caching method to use. Can be 'disk', 'arraylake', or 'streamlit'. Defaults to 'disk'.
+        - If 'disk', caches the result to a file (default: '.pkl' or '.zarr').
+        - If 'arraylake', caches the result to an Arraylake repository (requires 'repo_name').
+        - If 'streamlit', caches the result using Streamlit's caching system.
+
+    Usage Instructions
+    -------------------
+    - For **file caching** ('disk'):
+        - **`cache_file`**: Optional. Specifies the cache file name (defaults to the function name with `.pkl` or `.zarr` extension).
+        - **`cache_dir`**: Optional. Specifies the cache directory (defaults to `'cache'`).
+        - **`file_type`**: Optional. Specifies the file type (defaults to `'zarr'`, but can also be `'pkl'`).
+    
+    - For **arraylake caching** ('arraylake'):
+        - **`repo_name`**: Required. Specifies the Arraylake repository where the data is cached.
+    
+    - For **Streamlit caching** ('streamlit'):
+        - No extra parameters are required. The function is automatically cached using Streamlit's `st.cache_data`.
+
+
+
+    Wrapper Parameters:
+    -------------------
+    - **`read_cache`**: bool, optional, default=True
+        - **For 'disk' and 'arraylake' targets**: Attempt reading from the cache.
+        - **For 'streamlit' target**: Ignored.
+    
+    - **`write_cache`**: bool, optional, default=True
+        - **For 'disk' and 'arraylake' targets**: Write to cache if data was just read from cache.
+        - **For 'streamlit' target**: Ignored.
+    
+    - **`cache_dir`**: str, optional, default='cache'
+        - **For 'disk' target**: Specifies the directory where cache files are stored.
+        - **For 'arraylake' and 'streamlit' target**: Ignored.
+    
+    - **`cache_file`**: str, optional
+        - **For 'disk' target**: Specifies the name of the cache file (defaults to function name with `.zarr` or `.pkl` extension).
+        - **For 'arraylake' and 'streamlit' target**: Ignored.
+    
+    - **`repo_name`**: str, optional
+        - **For 'arraylake' target**: Specifies the Arraylake repository to store the cache.
+        - **For 'disk' and 'streamlit' targets**: Ignored.
+    
+    - **`check`**: Callable, optional, default=None
+        - **For 'disk' and 'arraylake' targets**: A function to validate whether the cached data is still valid. If `check(data)` returns False, the function is recomputed.
+        - **For 'streamlit' target**: Ignored.
+    
+    - **`file_type`**: Literal['pkl', 'zarr'], optional, default='pkl'
+        - **For 'disk' target**: Specifies the file type for the cache file (either 'pkl' or 'zarr').
+        - **For 'arraylake' and 'streamlit' targets**: Ignored.
+    
+    - **`kwargs`**: List[Any], optional
+        - Additional keyword arguments passed to the decorated function.
+
+    """
+    
+    def decorator(func: Callable) -> Callable:
+        def wrapper(*args:       List[Any], 
+                    read_cache:  bool = True, 
+                    write_cache: bool = True, 
+                    cache_dir:   str = CACHE_DIR, 
+                    cache_file:  Optional[str] = None, 
+                    repo_name:   Optional[str] = None, 
+                    check:       Optional[Callable] = None, 
+                    file_type:   Literal['pkl', 'zarr'] = 'zarr', 
+                    **kwargs:    List[Any]
+                    ) -> Any:
+
+            match target:
+                case 'disk':
+                    data = _cache_to_disk(func, *args, read_cache=read_cache, write_cache=write_cache, cache_dir=cache_dir, cache_file=cache_file, check=check, file_type=file_type, **kwargs)
+                case 'arraylake':
+                    data = _cache_to_arraylake(func, *args, read_cache=read_cache, write_cache=write_cache, repo_name=repo_name, check=check, **kwargs)
+                case 'streamlit':
+                    data = st.cache_data(func)(*args, **kwargs)
+                    return data
+                case _:
+                    raise ValueError(f"Unknown cache target: {target}. Must be one of 'disk', 'arraylake', or 'streamlit'.")
+            return data
+
+        return wrapper
+    return decorator
+
+
+def align_indices(df1: pd.DataFrame, df2: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Align the indices of two DataFrames to ensure they can be joined without errors.
+    
+    Parameters
+    ----------
+    df1 : pd.DataFrame
+        The first DataFrame.
+    df2 : pd.DataFrame
+        The second DataFrame.
+    
+    Returns
+    -------
+    (pd.DataFrame, pd.DataFrame)
+        The two DataFrames with aligned indices.
+    """
+    common_index = df1.index.union(df2.index)
+    return df1.reindex(common_index), df2.reindex(common_index)
+
+
+def move_columns_to_front(df: pd.DataFrame, column_names: list[str]) -> pd.DataFrame:
+    """
+    Reorder a DataFrame so that the specified columns are moved to the front.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The original DataFrame.
+    columns_names : list of str
+        List of column names to move to the front. Must be a subset of df.columns.
+
+    Returns
+    -------
+    pd.DataFrame
+        A new DataFrame with the specified columns at the front.
+    """
+    remaining_cols = [col for col in df.columns if col not in column_names]
+    return df[column_names + remaining_cols]
+
+
+# print("--- Defining ttt ---")
+# def ttt():
+#     pass
+# print("--- Finished loading risk_lib.util ---")
+
+def get_directory_last_updated_time(path: str | Path) -> datetime.datetime:
+    """
+    Get the most recent modification time from all files in a directory and its subdirectories.
+
+    Parameters
+    ----------
+    path : str or Path
+        Path to the root of the directory.
+
+    Returns
+    -------
+    datetime.datetime
+        Timestamp of the most recently modified file in the directory or any of its subdirectories.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Path does not exist: {path}")
+
+    latest_mtime = max(
+        f.stat().st_mtime
+        for f in path.rglob("*")
+        if f.is_file()
+    )
+
+    return datetime.datetime.fromtimestamp(latest_mtime)
+
+
+def is_sorted(date_list):
+    # TODO: Find better solution than using `is_sorted` everywhere
+    return all(date_list[i] <= date_list[i+1] for i in range(len(date_list)-1))
+
+def has_no_duplicates(lst: list[Hashable]) -> bool:
+    return len(lst) == len(set(lst))
+
+def remove_items_from_list(list_to_filter, list_to_exclude):
+    set_to_exclude = set(list_to_exclude)
+    return [item for item in list_to_filter if item not in set_to_exclude]
+
+
+def convert_df_to_json(obj: Any) -> Any:
+    """
+    Recursively convert all pandas DataFrame objects in a nested dictionary or list
+    to JSON-serializable strings using DataFrame.to_json().
+
+    Parameters
+    ----------
+    obj : Any
+        The input object to scan for pandas DataFrames. Can be a dictionary, list,
+        DataFrame, or any other Python object.
+
+    Returns
+    -------
+    Any
+        The input object with all pandas DataFrames replaced by their JSON string
+        representations. The structure of dictionaries and lists is preserved.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> my_dict = {
+    ...     'fixed_weights_data': pd.DataFrame({'a': [1, 2], 'b': [3, 4]}),
+    ...     'other': [1, 2, {'nested_df': pd.DataFrame({'x': [5, 6]})}]
+    ... }
+    >>> convert_dataframes_to_json(my_dict)
+    {
+        'fixed_weights_data': '[{"a":1,"b":3},{"a":2,"b":4}]',
+        'other': [1, 2, {'nested_df': '[{"x":5},{"x":6}]'}]
+    }
+    """
+    if isinstance(obj, dict):
+        return {k: convert_df_to_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_df_to_json(item) for item in obj]
+    elif isinstance(obj, pd.DataFrame):
+        return obj.to_json(orient='split')
+    else:
+        return obj
+
+
+def restore_df_from_json(obj: Any) -> Any:
+    """
+    Recursively convert JSON strings (produced by DataFrame.to_json(orient='split'))
+    in a nested dictionary or list back into pandas DataFrame objects.
+
+    Parameters
+    ----------
+    obj : Any
+        The input object to scan for DataFrame JSON strings. Can be a dictionary, list,
+        string, or any other Python object.
+
+    Returns
+    -------
+    Any
+        The input object with all DataFrame JSON strings replaced by pandas DataFrame
+        objects. The structure of dictionaries and lists is preserved.
+
+    Notes
+    -----
+    This function assumes that all JSON strings to be converted were produced using
+    DataFrame.to_json(orient='split'). If a string is not valid JSON in this format,
+    it will be left unchanged.
+    """
+    if isinstance(obj, dict):
+        return {k: restore_df_from_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [restore_df_from_json(item) for item in obj]
+    elif isinstance(obj, str):
+        # Try to parse as a DataFrame in 'split' orient
+        try:
+            # Try to read as DataFrame; if fails, leave as string
+            df = pd.read_json(StringIO(obj), orient='split')
+            # Heuristic: Only return as DataFrame if columns and data are present
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                return df
+            # If it's an empty DataFrame, check if the JSON string is a 'split' DataFrame
+            import json
+            dct = json.loads(obj)
+            if isinstance(dct, dict) and {'columns', 'index', 'data'}.issubset(dct):
+                return df
+        except Exception:
+            pass
+        return obj
+    else:
+        return obj
+
+
+def flatten_multiindex(index, sep='_'):
+    return index.map(lambda x: sep.join(map(str, x)))
+
+
+def trim_leading_zeros(obj: PandasObject) -> PandasObject:
+    mask = (obj != 0).cumsum() == 0
+    return obj.mask(mask)
