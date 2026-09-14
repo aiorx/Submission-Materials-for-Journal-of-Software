@@ -1,1 +1,1 @@
-# Materials-for-Journal-of-Software
+# Materials-for-Chinese-Journal-of-Computers
