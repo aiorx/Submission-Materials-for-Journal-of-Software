@@ -1,0 +1,117 @@
+/**
+ * Sorts a list of numbers using the merge sort algorithm.
+ * 
+ * Code mostly Assisted using common GitHub development utilities AI, with some modifications.
+ * 
+ * Compile with: gcc -Wall -O3 mergesort_serial.c -o mergesort_serial
+ * Run with: ./mergesort_serial array-length
+ * where:
+ *       array-length: the length of the array to be sorted
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <time.h>
+
+#include "utilities.h"
+
+bool merge(double *left, int left_len, double *right, int right_len) {
+
+    double* temp = (double*)malloc((left_len + right_len) * sizeof(double));
+
+    int i = 0, j = 0, k = 0;
+    
+    // merge the two arrays
+    while (i < left_len && j < right_len) {
+        if (left[i] < right[j]) {
+            temp[k] = left[i];
+            i++;
+        } else {
+            temp[k] = right[j];
+            j++;
+        }
+        k++;
+    }
+
+    while (i < left_len) {
+        temp[k] = left[i];
+        i++;
+        k++;
+    }
+
+    while (j < right_len) {
+        temp[k] = right[j];
+        j++;
+        k++;
+    }
+
+
+    memcpy(left, temp, (left_len + right_len) * sizeof(double));
+
+    free(temp);
+    
+    return true;
+}
+
+bool merge_sort(double *arr, int n) {
+
+    if (n <= 1) {
+        return true;
+    }
+
+    int mid = n / 2;
+    double *left = arr;
+    double *right = arr + mid;
+
+    // sort the two halves
+    merge_sort(left, mid);
+    merge_sort(right, n - mid);
+
+    // merge the two halves
+    merge(left, mid, right, n - mid);
+
+    return true;
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        printf("Usage: %s array-length\n", argv[0]);
+        return 1;
+    }
+
+    struct timespec start, end;
+
+    int n = atoi(argv[1]);
+    double *arr = create_array(n);
+    if (arr == NULL) {
+        printf("Error: Unable to allocate memory\n");
+        return 1;
+    }
+
+    // warmup the CPU
+    double* arr2 = create_array(n);
+    merge_sort(arr2, n);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    merge_sort(arr, n);
+
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    if (!is_sorted(arr, n)) {
+        printf("Error: Array is not sorted\n");
+        return 1;
+    }
+
+    double time_taken = end.tv_sec-start.tv_sec+(end.tv_nsec-start.tv_nsec)/1000000000.0;
+
+    printf("Time taken: %f\n", time_taken);
+
+    free(arr);
+
+    return 0;
+
+
+}

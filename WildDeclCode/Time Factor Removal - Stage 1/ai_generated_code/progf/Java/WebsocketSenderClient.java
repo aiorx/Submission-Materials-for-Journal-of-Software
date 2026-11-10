@@ -1,0 +1,111 @@
+package com.cougararray.TCPWebsocket;
+
+import java.net.URI;
+
+import org.java_websocket.client.WebSocketClient;
+import org.java_websocket.handshake.ServerHandshake;
+
+import com.cougararray.Config.config;
+import com.cougararray.OutputT.Output;
+import com.cougararray.OutputT.Status;
+import com.cougararray.TCPWebsocket.Packets.PingPacket;
+
+
+//NOTE! A MAJORITY OF CODE WAS Built using basic development resources
+//This is because I didn't feel like implementing something that's already done in the same fashion on the internet several times
+public class WebsocketSenderClient {
+    private static final config Config = new config();
+
+    private static WebSocketClient client;
+
+    public static void sendPing(String server) {
+        serverConnectAndSend(server, PingPacket.toJson());
+    }
+
+    public static void sendMessage(String server, String message) {
+    if (!Config.getActAsSender().equalsIgnoreCase("true")) {
+        Output.print("Sending is disabled in config.", Status.BAD);
+        return;
+    }
+    serverConnectAndSend(server, message);
+}
+
+    public static void sendByte(String server, byte[] content)
+    {
+        serverConnectAndSend(server, content);
+    }
+
+
+    //Backend-related commands
+    private static void serverConnectAndSend(String server, Object message){
+        try {
+            if (client == null || !client.isOpen()) {
+                connectToServer("ws://" + server);
+            }
+
+            if (client != null && client.isOpen()) {
+                sendAppropriateInfo(message);
+                Output.print("Ping", Status.GOOD);
+            } else {
+                Output.print("Client not connected. Could not send message.", Status.BAD);
+            }
+        } catch (Exception e) {
+            Output.print("Error sending message: " + e.getMessage(), Status.BAD);
+            //Output.printStackTrace(e);
+        }
+    }
+
+    private static void sendAppropriateInfo(Object message) {
+        if (message instanceof String) {
+            client.send((String) message);  // Send as String message
+            Output.print("String message sent.", Status.GOOD);
+        } else if (message instanceof byte[]) {
+            client.send((byte[]) message);  // Send as byte array
+            Output.print("Byte array message sent.", Status.GOOD);
+        } else {
+            Output.print("Unsupported message type: " + message.getClass(), Status.BAD);
+        }
+    }
+
+    // Static method to connect to the WebSocket server
+    private static void connectToServer(String serverURI) {
+        try {
+            client = new WebSocketClient(new URI(serverURI)) {
+                @Override
+                public void onOpen(ServerHandshake handshakedata) {
+                    Output.print("Connected to WebSocket server!", Status.GOOD);
+                }
+
+                @Override
+                public void onMessage(String message) {
+                    Output.print("Received from server: " + message);
+                }
+
+                @Override
+                public void onClose(int code, String reason, boolean remote) {
+                    Output.print("Connection closed.", Status.DASH);
+                }
+
+                @Override
+                public void onError(Exception ex) {
+                    Output.print("WebSocket error. " + ex.getMessage(), Status.BAD);
+                    //Output.printStackTrace(ex);
+                }
+            };
+
+            client.connectBlocking(); // Wait for the connection to complete
+        } catch (Exception e) {
+            Output.print("Error connecting to WebSocket server: " + e.getMessage(), Status.BAD);
+            //Output.printStackTrace(e);
+        }
+    }
+
+    public static void main(String[] args) {
+        // WebSocket server URI (Make sure your WebSocket server is running on this port)
+        String serverURI = "localhost:8000"; 
+
+        // Send the message using WebsocketSender
+        WebsocketSenderClient.sendPing(serverURI);
+    }
+    
+}

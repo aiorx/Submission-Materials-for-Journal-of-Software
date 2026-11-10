@@ -1,0 +1,71 @@
+var describe = require('vitest').describe;
+var it = require('vitest').it;
+var expect = require('vitest').expect;
+var vi = require('vitest').vi;
+var beforeEach = require('vitest').beforeEach;
+var TileAssets = require('../TileAssets').TileAssets;
+
+// this test was Assisted with basic coding tools :)
+describe('TileAssets', function () {
+    let onAllImagesLoaded: () => void;
+    let imageMock: any;
+    let loadCallbacks: (() => void)[];
+
+    beforeEach(() => {
+        loadCallbacks = [];
+
+        // Mock the global Image constructor
+        imageMock = vi.fn(() => {
+            const img = {
+                set src(_val: string) {
+                    // @ts-ignore
+                    loadCallbacks.push(() => img.onload && img.onload());
+                },
+                onload: null
+            };
+            return img;
+        });
+
+        // @ts-ignore override global Image in test env
+        global.Image = imageMock;
+        onAllImagesLoaded = vi.fn();
+    });
+
+    it('initializes and loads 5 images', () => {
+        new TileAssets(onAllImagesLoaded);
+        expect(imageMock).toHaveBeenCalledTimes(5);
+    });
+
+    it('stores images in correct properties', () => {
+        const assets = new TileAssets(onAllImagesLoaded);
+        expect(assets.grassTiles).toBeDefined();
+        expect(assets.grassMiddle).toBeDefined();
+        expect(assets.farmTiles).toBeDefined();
+        expect(assets.wetFarmTiles).toBeDefined();
+        expect(assets.crops).toBeDefined();
+    });
+
+    it('does not call callback before all images are loaded', () => {
+        new TileAssets(onAllImagesLoaded);
+        // Load only 4 images
+        for (let i = 0; i < 4; i++) loadCallbacks[i]();
+        expect(onAllImagesLoaded).not.toHaveBeenCalled();
+    });
+
+    it('calls onAllImagesLoaded after all images load', () => {
+        new TileAssets(onAllImagesLoaded);
+        loadCallbacks.forEach(cb => cb());
+        expect(onAllImagesLoaded).toHaveBeenCalledTimes(1);
+    });
+
+    it('handles out-of-order image loading', () => {
+        new TileAssets(onAllImagesLoaded);
+        // Load in random order
+        loadCallbacks[3]();
+        loadCallbacks[1]();
+        loadCallbacks[4]();
+        loadCallbacks[0]();
+        loadCallbacks[2]();
+        expect(onAllImagesLoaded).toHaveBeenCalledTimes(1);
+    });
+});

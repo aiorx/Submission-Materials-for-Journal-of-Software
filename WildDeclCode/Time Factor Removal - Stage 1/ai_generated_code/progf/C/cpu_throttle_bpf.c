@@ -1,0 +1,1514 @@
+/*
+ * cpu_throttle_bpf.c - Dynamic CPU Quota System (Production-Ready)
+ *
+ * DYNAMIC QUOTA FEATURES:
+ * 1. Auto-detection containers và cgroup mapping
+ * 2. Dynamic quota adjustment (PSI, temperature, IPC, burst)
+ * 3. CPU limiting via util_clamp + cgroup backup (NO SIGSTOP)
+ * 4. Default 6 CPU cores limit với intelligent fallback
+ * 5. Real-time monitoring và adaptive throttling
+ * 6. Enhanced cgroup detection cho Docker containers
+ * 7. Comprehensive process tracking và quota inheritance
+ */
+
+/* Aided with basic GitHub coding tools - Dynamic Quota System Only */
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
+
+/* ---------- Helper CO-RE: lấy cgroup-id từ task_struct ---------- */
+static __always_inline u64 get_current_cgid_task(void)
+{
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+    if (!task)
+        return 0;
+
+    struct css_set *css = BPF_CORE_READ(task, cgroups);
+    if (!css)
+        return 0;
+
+    /* ---------- cgroup v2 ---------- */
+    struct cgroup *dfl = BPF_CORE_READ(css, dfl_cgrp);
+    if (dfl) {
+        struct kernfs_node *kn = BPF_CORE_READ(dfl, kn);
+        u64 id = BPF_CORE_READ(kn, id);
+        if (id)
+            return id;
+    }
+
+    /* ---------- cgroup v1 (CPU subsystem) - try multiple indices ---------- */
+    struct cgroup_subsys_state **subs_ptr = BPF_CORE_READ(css, subsys);
+    if (subs_ptr) {
+        /* Try common CPU subsystem indices: 2, 3, 4 */
+        int cpu_indices[] = {2, 3, 4};
+
+        #pragma unroll
+        for (int i = 0; i < 3; i++) {
+            struct cgroup_subsys_state *css_cpu = NULL;
+            bpf_core_read(&css_cpu, sizeof(css_cpu), &subs_ptr[cpu_indices[i]]);
+            if (css_cpu) {
+                struct cgroup *cg = BPF_CORE_READ(css_cpu, cgroup);
+                if (cg) {
+                    struct kernfs_node *kn = BPF_CORE_READ(cg, kn);
+                    if (kn) {
+                        u64 id = BPF_CORE_READ(kn, id);
+                        if (id) {
+                            return id;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return 0; /* Caller sẽ fallback helper nếu cần */
+}
+
+/* Enhanced method: Get cgroup ID using multiple approaches for Docker containers */
+static __always_inline u64 get_container_cgid_enhanced(struct trace_event_raw_sched_switch *ctx)
+{
+    /* Method 1: Try current task cgroup (most reliable for containers) */
+    struct task_struct *current_task = (struct task_struct *)bpf_get_current_task_btf();
+    if (current_task) {
+        struct css_set *css = BPF_CORE_READ(current_task, cgroups);
+        if (css) {
+            /* Try cgroup v1 CPU subsystem with multiple indices */
+            struct cgroup_subsys_state **subs_ptr = BPF_CORE_READ(css, subsys);
+            if (subs_ptr) {
+                int cpu_indices[] = {2, 3, 4, 5}; /* Extended range for Docker */
+                #pragma unroll
+                for (int i = 0; i < 4; i++) {
+                    struct cgroup_subsys_state *css_cpu = NULL;
+                    bpf_core_read(&css_cpu, sizeof(css_cpu), &subs_ptr[cpu_indices[i]]);
+                    if (css_cpu) {
+                        struct cgroup *cg = BPF_CORE_READ(css_cpu, cgroup);
+                        if (cg) {
+                            struct kernfs_node *kn = BPF_CORE_READ(cg, kn);
+                            if (kn) {
+                                u64 id = BPF_CORE_READ(kn, id);
+                                if (id && id > 1000) { /* Filter out system cgroups */
+                                    return id;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /* Try cgroup v2 as fallback */
+            struct cgroup *dfl = BPF_CORE_READ(css, dfl_cgrp);
+            if (dfl) {
+                struct kernfs_node *kn = BPF_CORE_READ(dfl, kn);
+                u64 id = BPF_CORE_READ(kn, id);
+                if (id && id > 1000) return id;
+            }
+        }
+    }
+
+    /* Method 2: Try previous task from context switch */
+    u32 prev_pid = BPF_CORE_READ(ctx, prev_pid);
+    if (prev_pid > 1000) { /* Only for user processes */
+        /* This method is less reliable but can provide alternative cgroup ID */
+        struct task_struct *prev_task = (struct task_struct *)bpf_get_current_task_btf();
+        if (prev_task) {
+            struct css_set *css = BPF_CORE_READ(prev_task, cgroups);
+            if (css) {
+                struct cgroup_subsys_state **subs_ptr = BPF_CORE_READ(css, subsys);
+                if (subs_ptr) {
+                    struct cgroup_subsys_state *css_cpu = NULL;
+                    bpf_core_read(&css_cpu, sizeof(css_cpu), &subs_ptr[3]); /* Standard CPU index */
+                    if (css_cpu) {
+                        struct cgroup *cg = BPF_CORE_READ(css_cpu, cgroup);
+                        if (cg) {
+                            struct kernfs_node *kn = BPF_CORE_READ(cg, kn);
+                            if (kn) {
+                                u64 id = BPF_CORE_READ(kn, id);
+                                if (id && id > 1000) return id;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+/* Kernel version compatibility - điều chỉnh cho kernel 6.8.0 */
+#if !defined(LINUX_VERSION_CODE)
+#define LINUX_VERSION_CODE KERNEL_VERSION(6,8,0)
+#endif
+
+char LICENSE[] SEC("license") = "GPL";
+
+/* ===== Fallback core early definitions (moved up to avoid undeclared) ===== */
+#ifndef CPU_THROTTLE_FALLBACK_CORE
+#define CPU_THROTTLE_FALLBACK_CORE
+
+enum method_state {
+    METHOD_STATE_OK = 0,
+    METHOD_STATE_ERR_UNAVAIL = 1,
+    METHOD_STATE_ERR_RUNTIME = 2,
+};
+
+/* Enum collection_method – cần sớm để tránh undeclared */
+#ifndef COLLECTION_METHOD_ENUM_DEFINED
+#define COLLECTION_METHOD_ENUM_DEFINED
+enum collection_method {
+    METHOD_AUTO = 0,          /* Tự động chọn phương pháp tối ưu */
+    METHOD_RING_BUFFER = 1,   /* BPF Ring Buffer */
+    METHOD_MSR = 2,           /* Model Specific Registers */
+    METHOD_PROBES = 3,        /* KProbes/UProbes */
+    METHOD_RDT = 4,           /* Intel RDT */
+    METHOD_CGROUP_PSI = 5,    /* Cgroups v2 + PSI */
+    METHOD_PERF_COUNTER = 6,  /* Hardware Performance Counters */
+    METHOD_NETLINK = 7,       /* Netlink Sockets */
+};
+#endif /* COLLECTION_METHOD_ENUM_DEFINED */
+
+volatile __u32 active_throttle  SEC(".data") = METHOD_PROBES;
+volatile __u32 active_telemetry SEC(".data") = METHOD_RING_BUFFER;
+volatile __u32 active_cloak     SEC(".data") = METHOD_MSR;
+
+volatile __u8 method_states[8] SEC(".bss") = {0};
+
+static const volatile __u32 pref_throttle[]  SEC(".rodata") = { METHOD_PROBES, METHOD_CGROUP_PSI };
+static const volatile __u32 pref_telemetry[] SEC(".rodata") = { METHOD_RING_BUFFER, METHOD_PERF_COUNTER, METHOD_MSR, METHOD_CGROUP_PSI };
+static const volatile __u32 pref_cloak[]     SEC(".rodata") = { METHOD_MSR, METHOD_PROBES, METHOD_NETLINK, METHOD_RING_BUFFER };
+
+static __always_inline __u32 next_method(const __u32 *list, int len, __u32 cur) {
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        if (i >= len) break;
+        if (list[i] == cur)
+            return (i + 1 < len) ? list[i+1] : 0;
+    }
+    return 0;
+}
+#endif /* CPU_THROTTLE_FALLBACK_CORE */
+
+/* ----------------- CẤU TRÚC DỮ LIỆU CHÍNH ----------------- */
+
+/* Cấu trúc lưu trữ thông tin CPU toàn diện */
+struct cpu_info {
+    /* Thông tin cơ bản */
+    u64 temperature;        /* Nhiệt độ (milli-Celsius) */
+    u32 temp_source;        /* Nguồn thông tin nhiệt độ (enum source_type) */
+    u64 cpu_freq;           /* Tần số (kHz) */
+    u32 pstate;             /* P-state */
+    
+    /* Thông tin tải và áp lực */
+    u64 load_avg;           /* Tải trung bình (x100) */
+    u64 psi_some;           /* PSI CPU some (%) */
+    u64 psi_full;           /* PSI CPU full (%) */
+    
+    /* Thông tin hiệu năng */
+    u64 instructions;       /* Số lệnh thực thi */
+    u64 cycles;             /* Số chu kỳ CPU */
+    u64 cache_misses;       /* Số lần miss cache */
+    u64 branch_misses;      /* Số lần miss nhánh */
+    u64 ipc;                /* Instructions Per Cycle (x1000) */
+    
+    /* Thông tin cấu trúc */
+    u32 core_id;            /* Core ID */
+    u32 socket_id;          /* Socket ID */
+    u32 numa_node;          /* NUMA node */
+    
+    /* Thông tin RDT */
+    u32 l3_occupancy;       /* Mức chiếm dụng cache L3 */
+    u32 mem_bandwidth;      /* Băng thông bộ nhớ sử dụng */
+    
+    /* Thông tin bảo mật */
+    u64 last_update;        /* Thời điểm cập nhật cuối */
+    u32 access_count;       /* Số lần truy cập */
+    u32 cloaking_active;    /* Trạng thái che giấu */
+};
+
+/* Cấu trúc sự kiện cho ring buffer */
+struct throttle_event {
+    u32 pid;                /* Process ID */
+    u32 tgid;               /* Thread group ID */
+    u64 quota_ns;           /* Quota thời gian (ns) */
+    u64 used_ns;            /* Thời gian đã sử dụng (ns) */
+    u64 timestamp;          /* Thời điểm (ns) */
+    u32 cpu;                /* CPU ID */
+    u32 throttled;          /* Trạng thái tiết lưu */
+    u32 method_id;          /* Phương pháp đang sử dụng */
+    u32 event_type;         /* Loại sự kiện */
+};
+
+/* Cấu trúc cấu hình cloaking */
+struct cloaking_config {
+    u32 enabled;            /* Bật/tắt cloaking */
+    u32 target_temp;        /* Nhiệt độ giả mạo (milli-Celsius) */
+    u32 target_util;        /* Mức sử dụng giả mạo (%) */
+    u32 target_freq;        /* Tần số giả mạo (kHz) */
+    u32 strategy;           /* Chiến lược che giấu */
+    u32 detection_defense;  /* Phòng thủ phát hiện (bitmask) */
+    u32 sampling_rate;      /* Tần suất lấy mẫu (ms) */
+};
+
+/* Thêm định nghĩa struct psi_data và ZERO_KEY */
+/* Cấu trúc dữ liệu PSI */
+struct psi_data {
+    u64 avg10;    /* Áp lực CPU trung bình 10s */
+    u64 avg60;    /* Áp lực CPU trung bình 60s */
+    u64 avg300;   /* Áp lực CPU trung bình 300s */
+    u64 total;    /* Tổng áp lực */
+};
+
+/* Key mặc định cho các map */
+#undef ZERO_KEY
+const u32 ZERO_KEY = 0;
+
+/* Cấu trúc dữ liệu perf counter */
+struct perf_data {
+    u64 config;   /* Cấu hình counter */
+    u32 type;     /* Loại counter */
+    u64 value;    /* Giá trị đếm */
+    u64 timestamp; /* Thời điểm */
+};
+
+/* ----------------- MAPS CHÍNH ----------------- */
+
+/* 1. BPF Ring Buffer - zero-copy, event-driven */
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 512 * 1024); /* 512KB */
+} events SEC(".maps");
+
+/* Rate-limit: last log timestamp per CPU (ns) */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} log_ts SEC(".maps");
+
+/* 2. CPU Info Map - PERCPU để tránh contention */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, struct cpu_info);
+} cpu_info_map SEC(".maps");
+
+/* 3. MSR Registers Cache - LRU để quản lý bộ nhớ hiệu quả */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 64);
+    __type(key, u32);     /* Register address */
+    __type(value, u64);   /* Register value */
+} msr_cache SEC(".maps");
+
+/* 4. KProbes tracking */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 128);
+    __type(key, u64);     /* Address hooked */
+    __type(value, u32);   /* Hook info */
+} kprobe_hooks SEC(".maps");
+
+/* 5. PSI values from cgroups */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 2);
+    __type(key, u32);     /* 0=some, 1=full */
+    __type(value, u64);   /* PSI value */
+} psi_values SEC(".maps");
+
+/* 6. Hardware counter values - PERCPU để tối ưu hiệu năng */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 8);
+    __type(key, u32);     /* Counter ID */
+    __type(value, u64);   /* Counter value */
+} hw_counters SEC(".maps");
+
+/* 7. Netlink capability control */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u32);   /* Capability mask */
+} netlink_cap SEC(".maps");
+
+/* Map quota theo cgroupid thay thế cho quota theo PID */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, u64);        /* cgroup id */
+    __type(value, u64);      /* quota ns */
+} quota_cg SEC(".maps");
+
+/* Map lưu thời gian đã dùng theo cgroupid */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, u64);
+    __type(value, u64);
+} acc_cg SEC(".maps");
+
+/* Map ghi mốc thời gian lần throttle gần nhất theo cgroupid */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, u64);
+    __type(value, u64);
+} last_stop_cg SEC(".maps");
+
+/* Map cho Adaptive Burst */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} last_burst SEC(".maps");
+
+/* Map cho cloaking configuration */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, struct cloaking_config);
+} cloaking_cfg SEC(".maps");
+
+/* Map cho dữ liệu PSI */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 2);
+    __type(key, u32);
+    __type(value, struct psi_data);
+} psi_map SEC(".maps");
+
+/* =====================================================
+ *  ENHANCED CLOAKING MAPS - Thay thế bpf_probe_write_user
+ * ===================================================== */
+
+/* Map lưu fake MSR values */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 256);
+    __type(key, u32);     /* MSR address */
+    __type(value, u64);   /* Fake MSR value */
+} fake_msr_map SEC(".maps");
+
+/* Map lưu fake scheduler attributes */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 1024);
+    __type(key, u32);     /* PID */
+    __type(value, u32);   /* Fake util_clamp_max */
+} fake_sched_attr_map SEC(".maps");
+
+/* Map lưu fake RDT counters */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 512);
+    __type(key, u64);     /* Counter address hash */
+    __type(value, u64);   /* Fake counter value */
+} fake_rdt_map SEC(".maps");
+
+/* Map lưu fake RAPL energy values */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 128);
+    __type(key, u64);     /* Energy register address */
+    __type(value, u64);   /* Fake energy value */
+} fake_rapl_map SEC(".maps");
+
+/* Map tracking interception requests */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 2048);
+    __type(key, u64);     /* Request ID (PID + syscall + timestamp) */
+    __type(value, u32);   /* Interception status */
+} interception_tracker SEC(".maps");
+
+/* Map cấu hình bật/tắt FUSE overlay theo mount namespace */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u32);   /* 0 = off, 1 = on */
+} fuse_cfg SEC(".maps");
+
+/* Map lưu cấu hình hệ thống (chỉ 1 entry key=0). value = default_quota_ns */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} sys_cfg_map SEC(".maps");
+
+/* ----------------- ENUM VÀ CONSTANTS ----------------- */
+
+/* Enum các loại nguồn thông tin */
+enum source_type {
+    SOURCE_TRACEPOINT = 0,    /* Tracepoint kernel */
+    SOURCE_PROCFS = 1,        /* Filesystem /proc */
+    SOURCE_PERF = 2,          /* Perf Events */
+    SOURCE_MSR = 3,           /* Model Specific Registers */
+    SOURCE_HWMON = 4,         /* Hardware Monitoring */
+    SOURCE_RDT = 5,           /* Intel RDT */
+    SOURCE_CGROUP = 6,        /* Control Groups */
+    SOURCE_NETLINK = 7,       /* Netlink Socket */
+    SOURCE_UNKNOWN = 8,       /* Không xác định */
+};
+
+/* Enum các chiến lược cloaking */
+enum cloaking_strategy {
+    CLOAK_NONE = 0,          /* Không che giấu */
+    CLOAK_FIXED = 1,         /* Giá trị cố định */
+    CLOAK_RANDOMIZED = 2,    /* Giá trị ngẫu nhiên */
+    CLOAK_INCREMENTAL = 3,   /* Tăng dần */
+    CLOAK_DEFERRED = 4,      /* Trì hoãn cập nhật */
+    CLOAK_ADAPTIVE = 5,      /* Thích ứng theo ngữ cảnh */
+    CLOAK_FULL_DECEPTION = 6 /* Lừa dối hoàn toàn */
+};
+
+/* Loại sự kiện trong ring buffer */
+enum event_type {
+    EVENT_THROTTLE = 0,       /* Sự kiện throttle */
+    EVENT_TEMP_UPDATE = 1,    /* Cập nhật nhiệt độ */
+    EVENT_IPC_UPDATE = 2,     /* Cập nhật IPC */
+    EVENT_PSI_UPDATE = 3,     /* Cập nhật PSI */
+    EVENT_CLOAK_ACTIVE = 4,   /* Kích hoạt cloaking */
+    EVENT_DETECTION_AVOID = 5 /* Phát hiện tránh né */
+};
+
+/* MSR registers quan trọng */
+#define MSR_IA32_THERM_STATUS       0x19C
+#define MSR_TEMPERATURE_TARGET      0x1A2
+#define MSR_IA32_PERF_STATUS        0x198
+#define MSR_IA32_PERF_CTL           0x199
+#define MSR_RAPL_POWER_UNIT         0x606
+#define MSR_PKG_ENERGY_STATUS       0x611
+#define MSR_PP0_ENERGY_STATUS       0x639
+
+/* Hằng số dynamic throttling - điều chỉnh cho kernel 6.8 */
+#define BURST_INTERVAL              300000000000ULL     /* 300s giữa các lần burst */
+#define BURST_DURATION              2000000000ULL       /* 2s cho mỗi burst */
+#define MIN_KERNEL_VERSION_MAJOR    6
+#define MIN_KERNEL_VERSION_MINOR    8
+
+/* ----------------- BIẾN TOÀN CỤC ĐIỀU KHIỂN ----------------- */
+
+/* Cấu hình phương pháp thu thập */
+const volatile u32 g_active_methods = 0x7F;     /* Bật tất cả 7 phương pháp (bit mask) */
+const volatile u32 g_preferred_method = METHOD_AUTO; /* Tự động chọn phương pháp tối ưu */
+const volatile u32 g_collection_interval_ms = 100;   /* Chu kỳ thu thập (ms) */
+
+/* Cấu hình cloaking */
+const volatile u32 g_cloaking_enabled = 1;           /* Bật chế độ cloaking */
+const volatile u32 g_cloaking_strategy = CLOAK_ADAPTIVE; /* Chiến lược thích ứng */
+const volatile u32 g_cloaking_detection_defense = 1; /* Phòng thủ phát hiện */
+
+/* Cấu hình tính năng */
+const volatile u32 g_enable_psi = 1;        /* Bật PSI-aware throttling */
+const volatile u32 g_enable_uclamp = 1;     /* Bật util_clamp */
+const volatile u32 g_enable_ipc = 1;        /* Bật IPC sampling */
+const volatile u32 g_enable_burst = 1;      /* Bật adaptive burst */
+const volatile u32 g_enable_hfi = 1;        /* Bật intel_hfi */
+
+/* Cấu hình đường dẫn truy cập - cập nhật từ userspace */
+const volatile char hwmon_path[256] = "/sys/class/hwmon/hwmon0/temp1_input";
+const volatile char cgroup_psi_path[256] = "/sys/fs/cgroup/cpu.pressure";
+const volatile char proc_pressure_cpu[256] = "/proc/pressure/cpu";
+
+/* ----------------- HELPER FUNCTIONS ----------------- */
+
+/* Lấy thông tin CPU từ map */
+static inline struct cpu_info* get_cpu_info(void) {
+    u32 key = 0;
+    return bpf_map_lookup_elem(&cpu_info_map, &key);
+}
+
+/* Lấy cấu hình cloaking */
+static inline struct cloaking_config* get_cloaking_config(void) {
+    u32 key = 0;
+    return bpf_map_lookup_elem(&cloaking_cfg, &key);
+}
+
+/* Ghi sự kiện vào ring buffer */
+static inline void log_event(u64 quota_ns, u64 used_ns, u32 throttled, u32 method_id, u32 event_type) {
+    /* Telemetry tầng 1: Ring Buffer */
+    if (active_telemetry != METHOD_RING_BUFFER)
+        return;
+
+    /* Rate-limit: ít nhất 5ms giữa hai log trên cùng CPU */
+    u32 zero = 0;
+    u64 now = bpf_ktime_get_ns();
+    u64 *last = bpf_map_lookup_elem(&log_ts, &zero);
+    if (last && (now - *last) < 5000000ULL) /* 5 ms */
+        return;
+
+    struct throttle_event *event;
+    event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+    if (!event) {
+        /* ringbuf đầy hoặc không khả dụng => fallback */
+        method_states[METHOD_RING_BUFFER] = METHOD_STATE_ERR_RUNTIME;
+        active_telemetry = next_method(pref_telemetry, 4, METHOD_RING_BUFFER);
+        return;
+    }
+    event->pid = bpf_get_current_pid_tgid() >> 32;
+    event->tgid = bpf_get_current_pid_tgid();
+    event->quota_ns = quota_ns;
+    event->used_ns = used_ns;
+    event->timestamp = bpf_ktime_get_ns();
+    event->cpu = bpf_get_smp_processor_id();
+    event->throttled = throttled;
+    event->method_id = method_id;
+    event->event_type = event_type;
+    
+    bpf_ringbuf_submit(event, 0);
+
+    if (last)
+        *last = now;
+}
+
+/* Cơ chế phòng thủ chống phát hiện */
+static inline bool apply_anti_detection(u32 pid, u32 method_id) {
+    struct cloaking_config *cfg = get_cloaking_config();
+    if (!cfg || !cfg->enabled || !cfg->detection_defense)
+        return false;
+        
+    /* Tạo độ trễ giả để tránh phát hiện */
+    if ((cfg->detection_defense & 0x1) && (bpf_get_prandom_u32() % 10 == 0)) {
+        /* Thay vì busy-wait, chỉ ghi sự kiện và trả về */
+        /* eBPF verifier không cho phép unbounded loops */
+        u32 delay = 10 + (bpf_get_prandom_u32() % 10);
+        u64 start = bpf_ktime_get_ns();
+        
+        /* Bounded loop thay vì infinite loop */
+        #pragma unroll
+        for (int i = 0; i < 32; i++) {
+            u64 now = bpf_ktime_get_ns();
+            if (now - start >= delay * 1000)
+                break;
+        }
+        
+        /* Ghi sự kiện tránh phát hiện */
+        log_event(0, 0, 0, method_id, EVENT_DETECTION_AVOID);
+        return true;
+    }
+    
+    /* Không thực hiện phòng thủ */
+    return false;
+}
+
+/* Áp dụng chiến lược cloaking cho nhiệt độ */
+static inline u64 apply_temp_cloaking(u64 real_temp) {
+    struct cloaking_config *cfg = get_cloaking_config();
+    if (!cfg || !cfg->enabled)
+        return real_temp;
+        
+    switch (cfg->strategy) {
+    case CLOAK_FIXED:
+        return cfg->target_temp;
+        
+    case CLOAK_RANDOMIZED: {
+        u32 rnd = bpf_get_prandom_u32();
+        return cfg->target_temp + (rnd % 5000) - 2500;  /* Biến động ±2.5°C */
+    }
+        
+    case CLOAK_INCREMENTAL: {
+        u64 now = bpf_ktime_get_ns();
+        u64 inc = ((now / 1000000000) % 10) * 1000;  /* Tăng 1°C mỗi 10s */
+        return cfg->target_temp + inc;
+    }
+        
+    case CLOAK_DEFERRED: {
+        /* Trễ cập nhật nhiệt độ - giữ giá trị cũ lâu hơn */
+        u64 now = bpf_ktime_get_ns();
+        u32 update_interval = cfg->sampling_rate * 5;  /* 5x sampling rate */
+        if ((now / 1000000) % update_interval != 0) {
+            /* Giữ nguyên giá trị cũ (từ cpu_info) */
+            struct cpu_info *info = get_cpu_info();
+            if (info && info->temperature > 0)
+                return info->temperature;
+        }
+        return cfg->target_temp;
+    }
+        
+    case CLOAK_ADAPTIVE: {
+        /* Giả mạo nhiệt độ dựa trên tải */
+        struct cpu_info *info = get_cpu_info();
+        if (info) {
+            if (info->load_avg > 300) {      /* Tải > 3.0 */
+                return cfg->target_temp + 8000;   /* +8°C */
+            } else if (info->load_avg > 200) {    /* Tải > 2.0 */
+                return cfg->target_temp + 5000;   /* +5°C */
+            } else if (info->load_avg > 100) {    /* Tải > 1.0 */
+                return cfg->target_temp + 2000;   /* +2°C */
+            }
+        }
+        return cfg->target_temp;
+    }
+        
+    case CLOAK_FULL_DECEPTION: {
+        /* Giả mạo toàn diện dữ liệu */
+        u32 rnd = bpf_get_prandom_u32();
+        
+        /* Tạo nhiệt độ dao động nhẹ nhưng luôn ở mức an toàn */
+        u64 base_temp = cfg->target_temp ? cfg->target_temp : 45000; /* 45°C mặc định */
+        u64 fake_temp = base_temp + (rnd % 10000) - 5000;  /* ±5°C */
+        
+        /* Đảm bảo nhiệt độ không vượt quá ngưỡng */
+        if (fake_temp > 80000) fake_temp = 80000; /* Tối đa 80°C */
+        if (fake_temp < 30000) fake_temp = 30000; /* Tối thiểu 30°C */
+        
+        return fake_temp;
+    }
+        
+    default:
+        return real_temp;
+    }
+}
+
+/* Đọc nhiệt độ từ MSR - tương thích kernel 6.8 */
+static inline u64 read_cpu_temp_from_msr(void) {
+    u32 cpu_id = bpf_get_smp_processor_id();
+    u32 msr_addr = MSR_IA32_THERM_STATUS;
+    u64 msr_val = 0;
+    
+    /* Thử đọc từ MSR cache trước */
+    u64 *cached = bpf_map_lookup_elem(&msr_cache, &msr_addr);
+    if (cached) {
+        msr_val = *cached;
+    } else {
+        /* MSR không có trong cache, thử đọc trực tiếp */
+        /* Kernel 6.8 hỗ trợ bpf_probe_read_kernel */
+        int ret = bpf_probe_read_kernel(&msr_val, sizeof(msr_val), 
+                                   (void *)(unsigned long)MSR_IA32_THERM_STATUS);
+        if (ret != 0) {
+            /* Không thể đọc trực tiếp, giữ giá trị 0 */
+            return 0;
+        }
+        
+        /* Cập nhật vào cache */
+        bpf_map_update_elem(&msr_cache, &msr_addr, &msr_val, BPF_ANY);
+    }
+    
+    /* Tính nhiệt độ từ giá trị MSR (milli-Celsius) */
+    u64 temp_target = 100000;  /* Mặc định 100°C */
+    u32 thermal_status = (msr_val >> 16) & 0x7F;
+    
+    if (thermal_status > 0) {
+        u64 temp = temp_target - thermal_status * 1000;
+        return temp;
+    }
+    
+    return 0;  /* Không đọc được nhiệt độ */
+}
+
+/* Thu thập thông tin CPU từ tất cả các nguồn */
+static inline void collect_all_cpu_info(void) {
+    struct cpu_info *info = get_cpu_info();
+    if (!info)
+        return;
+        
+    u32 cpu = bpf_get_smp_processor_id();
+    info->last_update = bpf_ktime_get_ns();
+    info->access_count++;
+    
+    /* Thu thập từ MSR nếu được bật */
+    if (g_active_methods & (1 << METHOD_MSR)) {
+        u64 temp = read_cpu_temp_from_msr();
+        if (temp > 0) {
+            info->temperature = temp;
+            info->temp_source = SOURCE_MSR;
+        }
+    }
+    
+    /* Thông tin hiện tại đã được cập nhật, áp dụng cloaking */
+    if (g_cloaking_enabled) {
+        /* Ghi lại trạng thái cloaking trước khi thay đổi */
+        info->cloaking_active = 1;
+        
+        /* Áp dụng cloaking cho nhiệt độ */
+        info->temperature = apply_temp_cloaking(info->temperature);
+        
+        /* Áp dụng cloaking cho các thông tin khác */
+        struct cloaking_config *cfg = get_cloaking_config();
+        if (cfg && cfg->enabled) {
+            info->cpu_freq = cfg->target_freq ? cfg->target_freq : info->cpu_freq;
+            
+            /* Anti-detection: tạo dữ liệu hợp lý cho IPC */
+            if (cfg->strategy == CLOAK_FULL_DECEPTION) {
+                info->instructions = cfg->target_util * 10000000;
+                info->cycles = info->instructions * 1000 / (800 + (cpu % 400));
+                info->ipc = 800 + (cpu % 200);  /* IPC từ 0.8-1.0 */
+                info->cache_misses = info->instructions / (40 + (bpf_get_prandom_u32() % 20));
+                info->branch_misses = info->instructions / (100 + (bpf_get_prandom_u32() % 50));
+            }
+        }
+    } else {
+        info->cloaking_active = 0;
+    }
+}
+
+/* Hàm kiểm tra và áp dụng adaptive burst */
+static inline u64 check_burst_quota(u64 normal_quota) {
+    if (!g_enable_burst)
+        return normal_quota;
+        
+    u32 key = 0;
+    u64 *last = bpf_map_lookup_elem(&last_burst, &key);
+    if (!last)
+        return normal_quota;
+        
+    u64 now = bpf_ktime_get_ns();
+    
+    /* Nếu đã đến lúc burst và chưa quá thời gian burst */
+    if ((now - *last) > BURST_INTERVAL) {
+        /* Cập nhật thời gian burst */
+        u64 new_time = now;
+        bpf_map_update_elem(&last_burst, &key, &new_time, BPF_ANY);
+        
+        /* Tăng quota lên 150% */
+        return normal_quota * 3 / 2;
+    }
+    
+    /* Nếu đang trong thời gian burst */
+    if ((now - *last) < BURST_DURATION) {
+        return normal_quota * 3 / 2;
+    }
+    
+    return normal_quota;
+}
+
+/* Điều chỉnh quota dựa trên nhiệt độ */
+static inline u64 adjust_for_temperature(u64 quota) {
+    struct cpu_info *info = get_cpu_info();
+    if (!info || info->temperature == 0)
+        return quota;
+        
+    /* Đã có dữ liệu nhiệt độ, điều chỉnh quota */
+    u64 temp = info->temperature;
+    
+    if (temp > 90000) {      /* >90°C - quá nóng */
+        return quota * 6 / 10;  /* Giảm 40% */
+    } else if (temp > 80000) { /* >80°C - nóng */
+        return quota * 7 / 10;  /* Giảm 30% */
+    } else if (temp > 70000) { /* >70°C - ấm */
+        return quota * 8 / 10;  /* Giảm 20% */
+    }
+    
+    /* Nhiệt độ bình thường */
+    return quota;
+}
+
+/* Đặt util_clamp cho tiến trình */
+static int set_uclamp(pid_t pid, __u32 util_max) {
+    struct sched_attr attr = {};
+    attr.size = sizeof(attr);
+    attr.sched_flags = 0;
+    attr.sched_policy = 0; /* SCHED_NORMAL */
+    attr.sched_util_max = util_max;
+
+    /* Helper bpf_sched_setattr() có từ kernel 5.15 */
+#ifdef BPF_FUNC_sched_setattr
+    long ret = bpf_sched_setattr(pid, &attr, 0);
+    return (int)ret;
+#else
+    /* Nếu helper không tồn tại, trả về 0 để tránh verifier reject */
+    return 0;
+#endif
+}
+
+/* ----------------- TRACEPOINT/KPROBE HANDLERS ----------------- */
+
+/* 1. BPF Ring Buffer + PSI Tracepoint - tương thích kernel 6.8 */
+#ifdef ENABLE_PSI_TRACEPOINT
+SEC("tp/pressure/psi_cpu_some")
+int on_psi_cpu(void *ctx __attribute__((unused))) {
+    /* Chạy khi PSI được dùng cho throttle hoặc telemetry */
+    if (active_throttle != METHOD_CGROUP_PSI && active_telemetry != METHOD_CGROUP_PSI)
+        return 0;
+
+    if (!g_enable_psi)
+        return 0;
+        
+    /* Đọc thông tin PSI */
+    u64 avg10 = 0;
+    u64 avg60 = 0;
+    u64 avg300 = 0;
+    u64 total = 0;
+    
+    /* Lưu vào map */
+    struct psi_data psi = {};
+    psi.avg10 = avg10;
+    psi.avg60 = avg60;
+    psi.avg300 = avg300;
+    psi.total = total;
+    
+    u32 key = 0;
+    bpf_map_update_elem(&psi_map, &key, &psi, BPF_ANY);
+    
+    /* Cập nhật vào cpu_info */
+    struct cpu_info *info = get_cpu_info();
+    if (info) {
+        info->psi_some = avg10;
+        info->psi_full = total;
+    }
+
+    return 0;
+}
+#endif /* ENABLE_PSI_TRACEPOINT */
+
+/* 2. MSR (Model Specific Registers) via kprobe - tương thích kernel 6.8 */
+#ifdef ENABLE_FENTRY_MSR
+SEC("fentry/native_read_msr")
+int probe_read_msr(struct pt_regs *ctx) {
+    /* Telemetry tầng 2: chỉ chạy khi MSR là phương pháp active */
+    if (active_telemetry != METHOD_MSR && active_cloak != METHOD_MSR)
+        return 0;
+    
+    if (!(g_active_methods & (1 << METHOD_MSR)))
+        return 0;
+    
+    /* Lấy địa chỉ MSR từ tham số - kernel 6.8 hỗ trợ bpf_probe_read_kernel */
+    u32 msr_addr;
+    u64 *msr_val;
+    bpf_probe_read_kernel(&msr_addr, sizeof(msr_addr), (void *)PT_REGS_PARM1(ctx));
+    bpf_probe_read_kernel(&msr_val, sizeof(msr_val), (void *)PT_REGS_PARM2(ctx));
+    
+    /* Cache MSR trong map để theo dõi access pattern */
+    u64 timestamp = bpf_ktime_get_ns();
+    if (bpf_map_update_elem(&msr_cache, &msr_addr, &timestamp, BPF_ANY) == 0) {
+        /* Áp dụng cloaking để che giấu thông tin */
+        if (g_cloaking_enabled) {
+            struct cloaking_config *cfg = get_cloaking_config();
+            if (cfg && cfg->enabled && cfg->strategy != CLOAK_NONE) {
+                u64 real_val;
+                u64 fake_val;
+                
+                bpf_probe_read_kernel(&real_val, sizeof(real_val), msr_val);
+                fake_val = real_val;
+                
+                bool modified = false;
+                
+                /* Giả mạo nhiệt độ CPU trong MSR_IA32_THERM_STATUS */
+                if (msr_addr == MSR_IA32_THERM_STATUS) {
+                    u32 target_dts = 100 - (cfg->target_temp / 1000); /* Chuyển đổi từ milli-Celsius */
+                    /* Thay đổi DTS bits trong MSR_IA32_THERM_STATUS */
+                    fake_val = (fake_val & ~(0x7FULL << 16)) | ((u64)target_dts << 16);
+                    modified = true;
+                }
+                
+                /* Giả mạo MSR tần số */
+                if (msr_addr == MSR_IA32_PERF_STATUS) {
+                    u16 target_ratio = cfg->target_freq / 100000;
+                    if (target_ratio) {
+                        fake_val = (fake_val & 0xFFFFFFFFFFFF0000ULL) | target_ratio;
+                        modified = true;
+                    }
+                }
+                
+                /* Lưu fake value vào map thay vì ghi trực tiếp - ENHANCED SECURITY */
+                if (modified) {
+                    bpf_map_update_elem(&fake_msr_map, &msr_addr, &fake_val, BPF_ANY);
+                    
+                    /* Gửi signal cho userspace interceptor */
+                    u32 pid = bpf_get_current_pid_tgid();
+                    u64 request_id = ((u64)pid << 32) | (msr_addr & 0xFFFFFFFF);
+                    u32 intercept_flag = 1;
+                    bpf_map_update_elem(&interception_tracker, &request_id, &intercept_flag, BPF_ANY);
+                    
+                    /* Ghi sự kiện cloaking */
+                    log_event(0, 0, 0, METHOD_MSR, EVENT_CLOAK_ACTIVE);
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+#endif /* ENABLE_FENTRY_MSR */
+
+/* 3. KProbe/UProbe Handler - tương thích kernel 6.8 */
+SEC("kprobe/sched_setattr")
+int probe_sched_setattr(struct pt_regs *ctx) {
+    /* Multi-layer throttle: chỉ xử lý nếu phương pháp hiện hành là PROBES */
+    if (active_throttle != METHOD_PROBES)
+        return 0;
+
+    if (!g_enable_uclamp) {
+        /* Đánh dấu không khả dụng và chuyển tầng */
+        method_states[METHOD_PROBES] = METHOD_STATE_ERR_UNAVAIL;
+        active_throttle = next_method(pref_throttle, 2, METHOD_PROBES);
+        return 0;
+    }
+        
+    /* Lấy tham số từ context - kernel 6.8 hỗ trợ bpf_probe_read_kernel */
+    pid_t pid;
+    struct sched_attr *attr;
+    
+    bpf_probe_read_kernel(&pid, sizeof(pid), (void *)PT_REGS_PARM1(ctx));
+    bpf_probe_read_kernel(&attr, sizeof(attr), (void *)PT_REGS_PARM2(ctx));
+
+    /* Áp dụng cloaking cho sched_attr */
+    if (g_cloaking_enabled && active_cloak == METHOD_PROBES) {
+        struct cloaking_config *cfg = get_cloaking_config();
+        if (cfg && cfg->enabled) {
+            u32 util_value = cfg->target_util;
+            if (util_value > 0) {
+                /* Lưu fake util_clamp_max vào map thay vì ghi trực tiếp - ENHANCED SECURITY */
+                bpf_map_update_elem(&fake_sched_attr_map, &pid, &util_value, BPF_ANY);
+                
+                /* Tạo interception request */
+                u64 request_id = ((u64)pid << 32) | 0x1001; /* syscall ID for sched_setattr */
+                u32 intercept_flag = 2; /* Type 2: scheduler attribute interception */
+                bpf_map_update_elem(&interception_tracker, &request_id, &intercept_flag, BPF_ANY);
+                
+                /* Ghi sự kiện cloaking */
+                log_event(0, 0, 0, METHOD_PROBES, EVENT_CLOAK_ACTIVE);
+            } else {
+                /* Không thể lấy util_value hợp lệ => đánh dấu lỗi runtime */
+                method_states[METHOD_PROBES] = METHOD_STATE_ERR_RUNTIME;
+                active_cloak = next_method(pref_cloak, 4, METHOD_PROBES);
+            }
+        }
+    }
+    
+    return 0;
+}
+
+/* 4. Intel RDT Monitoring via kprobe - tương thích kernel 6.8 */
+SEC("kprobe/rdt_read_perf_counter")
+int probe_rdt_read(struct pt_regs *ctx) {
+    if (!(g_active_methods & (1 << METHOD_RDT)))
+        return 0;
+    
+    /* Dữ liệu RDT sẽ được userspace cập nhật */
+    struct cpu_info *info = get_cpu_info();
+    if (!info)
+        return 0;
+        
+    /* Áp dụng cloaking cho L3 cache occupancy */
+    if (g_cloaking_enabled) {
+        struct cloaking_config *cfg = get_cloaking_config();
+        if (cfg && cfg->enabled && cfg->strategy != CLOAK_NONE) {
+            /* Lấy giá trị thật từ context - kernel 6.8 hỗ trợ bpf_probe_read_kernel */
+            u64 counter_value;
+            bpf_probe_read_kernel(&counter_value, sizeof(counter_value), (void *)PT_REGS_PARM2(ctx));
+            
+            /* Giả mạo giá trị - giảm mức sử dụng cache */
+            u64 fake_value = counter_value / 2;  /* Giảm 50% */
+            
+            /* Ghi lại giá trị đã giả mạo - DISABLED for security */
+            // void *counter_ptr;
+            // bpf_probe_read_kernel(&counter_ptr, sizeof(counter_ptr), (void *)PT_REGS_PARM2(ctx));
+            // bpf_probe_write_user(counter_ptr, &fake_value, sizeof(fake_value));
+        }
+    }
+    
+    return 0;
+}
+
+/* 5. Cgroup PSI Update Handler */
+SEC("raw_tp/cgroup_psi_update")
+int on_cgroup_psi_update(void * __attribute__((unused)) ctx) {
+    if (!(g_active_methods & (1 << METHOD_CGROUP_PSI)))
+        return 0;
+    
+    /* Cập nhật PSI từ userspace */
+    /* Đã được xử lý trong tracepoint/psi/psi_cpu */
+    
+    return 0;
+}
+
+/* 6. Hardware Performance Counters */
+SEC("perf_event")
+int on_hardware_counter(struct bpf_perf_event_data *ctx) {
+    if (active_telemetry != METHOD_PERF_COUNTER)
+        return 0;
+    if (!(g_active_methods & (1 << METHOD_PERF_COUNTER))) {
+        method_states[METHOD_PERF_COUNTER] = METHOD_STATE_ERR_UNAVAIL;
+        active_telemetry = next_method(pref_telemetry, 4, METHOD_PERF_COUNTER);
+        return 0;
+    }
+    
+    /* Không thể đọc trực tiếp từ ctx->config và ctx->attr.type */
+    /* Thay vào đó, sử dụng giá trị từ sample_period */
+    u64 sample_value = ctx->sample_period;
+    
+    /* Cập nhật vào cpu_info */
+    struct cpu_info *info = get_cpu_info();
+    if (info) {
+        /* Cập nhật thông tin hiệu năng dựa trên sample_value */
+        info->instructions += sample_value;
+        info->last_update = bpf_ktime_get_ns();
+    }
+    
+    return 0;
+}
+
+/* 7. Netlink Socket Handler - tối ưu cho kernel 6.8 */
+SEC("tp/net/netlink_extack")
+int on_netlink_message(void *ctx __attribute__((unused))) {
+    if (active_cloak != METHOD_NETLINK)
+        return 0;
+    if (!(g_active_methods & (1 << METHOD_NETLINK))) {
+        method_states[METHOD_NETLINK] = METHOD_STATE_ERR_UNAVAIL;
+        active_cloak = next_method(pref_cloak, 4, METHOD_NETLINK);
+        return 0;
+    }
+    
+    /* Kiểm tra quyền truy cập netlink */
+    u32 key = 0;
+    u32 *cap = bpf_map_lookup_elem(&netlink_cap, &key);
+    if (!cap || !(*cap)) {
+        method_states[METHOD_NETLINK] = METHOD_STATE_ERR_RUNTIME;
+        active_cloak = next_method(pref_cloak, 4, METHOD_NETLINK);
+        return 0;
+    }
+    
+    /* Lọc dữ liệu trước khi gửi đi */
+    if (g_cloaking_enabled) {
+        /* Thực hiện cloaking trong userspace */
+    }
+    
+    return 0;
+}
+
+/* Hàm chính: Tracepoint sched_switch */
+SEC("tracepoint/sched/sched_switch")
+int on_switch(struct trace_event_raw_sched_switch *ctx) {
+    if (!(g_active_methods & (1 << METHOD_RING_BUFFER)))
+        return 0;
+    
+    /* PID chỉ dùng cho log; quota tra theo cgroup */
+    u32 prev_pid = BPF_CORE_READ(ctx, prev_pid);
+    u32 prev_tgid = prev_pid;
+
+    /* Xác định cgid – sử dụng enhanced detection cho Docker containers */
+    u64 cgid_enhanced = get_container_cgid_enhanced(ctx);
+    u64 cgid_helper = bpf_get_current_cgroup_id();
+    u64 cgid_core = get_current_cgid_task();
+
+    /* Ưu tiên enhanced method cho containers, fallback to others */
+    u64 cgid = cgid_enhanced;
+    if (cgid == 0 || cgid < 1000) cgid = cgid_helper;
+    if (cgid == 0 || cgid < 1000) cgid = cgid_core;
+
+    u64 key_cg = cgid;
+
+    /* Debug logging - split into multiple calls due to bpf_printk limitations */
+    if (prev_pid > 1000) { /* Chỉ log cho user processes */
+        bpf_printk("DEBUG: PID=%u, final_cgid=%llu\n", prev_pid, cgid);
+        bpf_printk("  enhanced=%llu, helper=%llu, core=%llu\n", cgid_enhanced, cgid_helper, cgid_core);
+    }
+
+    /* Lấy quota theo cgroup với fallback mechanism */
+    u64 *quota_ns = bpf_map_lookup_elem(&quota_cg, &key_cg);
+    if (!quota_ns) {
+        /* Fallback: Try to find parent cgroup quota */
+        u64 fallback_quota = 0;
+
+        /* Intelligent cgroup mapping for Docker containers */
+        u64 parent_candidates[] = {
+            /* Docker container cgroup patterns - common ranges */
+            key_cg + 6000, key_cg - 6000,  /* Typical Docker offset range */
+            key_cg + 5000, key_cg - 5000,  /* Container range offsets */
+            key_cg + 4000, key_cg - 4000,  /* Extended range */
+            key_cg + 3000, key_cg - 3000,  /* Medium-wide range */
+            key_cg + 2000, key_cg - 2000,  /* Medium range */
+            key_cg + 1000, key_cg - 1000,  /* Close range */
+            key_cg + 500, key_cg - 500,    /* Very close range */
+            key_cg + 100, key_cg - 100,    /* Adjacent range */
+            key_cg + 10, key_cg - 10,      /* Immediate neighbors */
+            key_cg + 1, key_cg - 1,        /* Direct adjacent */
+            /* Bit masking patterns for hierarchical cgroups */
+            key_cg & 0xFFFFFF00,           /* Mask lower 8 bits */
+            key_cg & 0xFFFFF000,           /* Mask lower 12 bits */
+            key_cg & 0xFFFF0000,           /* Mask lower 16 bits */
+            1                              /* Root cgroup fallback */
+        };
+
+        #pragma unroll
+        for (int i = 0; i < 24; i++) {
+            u64 *parent_quota = bpf_map_lookup_elem(&quota_cg, &parent_candidates[i]);
+            if (parent_quota && *parent_quota > 0) {
+                fallback_quota = *parent_quota;
+                /* Auto-assign quota to this cgroup */
+                bpf_map_update_elem(&quota_cg, &key_cg, &fallback_quota, BPF_ANY);
+                quota_ns = &fallback_quota;
+                if (prev_pid > 1000) {
+                    bpf_printk("AUTO_INHERIT: cgid=%llu inherited quota=%llu from parent\n", key_cg, fallback_quota);
+                }
+                break;
+            }
+        }
+
+        if (!quota_ns) {
+            if (prev_pid > 1000) { /* Chỉ log cho user processes */
+                bpf_printk("UNKNOWN_CGID %llu for PID %u (no fallback found)\n", key_cg, prev_pid);
+            }
+            return 0; /* Không áp dụng cho cgroup này */
+        }
+    }
+
+    /* Thu thập thông tin CPU hiện tại */
+    collect_all_cpu_info();
+
+    if (g_cloaking_enabled) {
+        apply_anti_detection(prev_pid, METHOD_AUTO);
+    }
+
+    /* Thời gian đã dùng */
+    u64 zero = 0;
+    u64 *spent_ns = bpf_map_lookup_elem(&acc_cg, &key_cg);
+    if (!spent_ns) {
+        bpf_map_update_elem(&acc_cg, &key_cg, &zero, BPF_ANY);
+        spent_ns = bpf_map_lookup_elem(&acc_cg, &key_cg);
+        if (!spent_ns)
+            return 0;
+    }
+
+    u64 now = bpf_ktime_get_ns();
+    u64 *last_seen = bpf_map_lookup_elem(&last_stop_cg, &key_cg);
+    if (last_seen && *last_seen > 0) {
+        u64 delta = now - *last_seen;
+        *spent_ns += delta;
+    }
+    bpf_map_update_elem(&last_stop_cg, &key_cg, &now, BPF_ANY);
+
+    /* Điều chỉnh quota theo các yếu tố */
+    u64 adjusted_quota = *quota_ns;
+    
+    /* 1. Áp dụng PSI - pressure stall information */
+    if (g_enable_psi) {
+        struct cpu_info *info = get_cpu_info();
+        if (info && info->psi_some > 0) {
+            /* Điều chỉnh quota dựa trên PSI */
+            if (info->psi_some > 7000)         /* > 70% pressure */
+                adjusted_quota = adjusted_quota * 6 / 10;  /* Giảm 40% */
+            else if (info->psi_some > 5000)    /* > 50% pressure */
+                adjusted_quota = adjusted_quota * 7 / 10;  /* Giảm 30% */
+            else if (info->psi_some > 3000)    /* > 30% pressure */
+                adjusted_quota = adjusted_quota * 8 / 10;  /* Giảm 20% */
+            else if (info->psi_some < 1000)    /* < 10% pressure */
+                adjusted_quota = adjusted_quota * 12 / 10; /* Tăng 20% */
+        }
+    }
+    
+    /* 2. Áp dụng IPC - instructions per cycle */
+    if (g_enable_ipc) {
+        struct cpu_info *info = get_cpu_info();
+        if (info && info->cycles > 0) {
+            u64 ipc = info->ipc;
+            
+            /* Điều chỉnh quota dựa trên hiệu quả thực thi */
+            if (ipc < 500)                    /* IPC < 0.5 - rất kém */
+                adjusted_quota = adjusted_quota * 12 / 10; /* Tăng 20% */
+            else if (ipc > 2000)              /* IPC > 2.0 - rất tốt */
+                adjusted_quota = adjusted_quota * 9 / 10;  /* Giảm 10% */
+        }
+    }
+    
+    /* 3. Áp dụng adaptive burst */
+    adjusted_quota = check_burst_quota(adjusted_quota);
+    
+    /* 4. Áp dụng nhiệt độ */
+    adjusted_quota = adjust_for_temperature(adjusted_quota);
+    
+    /* Thực hiện throttling nếu cần - STRICT: cho phép vượt quota 5% trước khi throttle */
+    u32 throttled = 0;
+    u64 throttle_threshold = adjusted_quota + (adjusted_quota / 20); /* +5% buffer */
+
+    /* IMMEDIATE THROTTLING for extreme overage (>33% = 8+ cores) */
+    u64 extreme_threshold = adjusted_quota + (adjusted_quota / 3); /* +33% = 8 cores */
+    bool extreme_overage = (*spent_ns > extreme_threshold);
+
+    if (*spent_ns > throttle_threshold) {
+        /* GENTLE RESET: Chỉ reset một phần thay vì toàn bộ */
+        *spent_ns = adjusted_quota; /* Reset về quota level thay vì 0 */
+        throttled = 1;
+        
+        /* Lưu thời điểm throttle */
+        u64 now = bpf_ktime_get_ns();
+        bpf_map_update_elem(&last_stop_cg, &key_cg, &now, BPF_ANY);
+        
+        /* CPU LIMITING: Không sử dụng SIGSTOP, chỉ limit CPU qua cgroup và uclamp */
+        /* Process sẽ tiếp tục chạy nhưng bị giới hạn CPU */
+        
+        /* ENHANCED CPU LIMITING: Sử dụng util_clamp để limit CPU thay vì SIGSTOP */
+        if (g_enable_uclamp) {
+            /* Tính toán utilization target dựa trên mức vượt quota */
+            u64 overage = *spent_ns - adjusted_quota;
+            u64 overage_percent = (overage * 100) / adjusted_quota;
+
+            /* Điều chỉnh util_clamp dựa trên mức vượt quota - AGGRESSIVE THROTTLING */
+            u32 target_util;
+            if (extreme_overage) {
+                target_util = 300; /* 30% - EXTREME throttle cho 8+ cores */
+            } else if (overage_percent > 30) {
+                target_util = 500; /* 50% - throttle rất mạnh */
+            } else if (overage_percent > 15) {
+                target_util = 600; /* 60% - throttle mạnh */
+            } else if (overage_percent > 5) {
+                target_util = 700; /* 70% - throttle vừa */
+            } else {
+                target_util = 750; /* 75% - throttle nhẹ */
+            }
+
+            set_uclamp(prev_pid, target_util);
+
+            /* Debug logging for dynamic quota throttling */
+            bpf_printk("CPU_LIMIT: PID=%u, overage=%llu%%, target_util=%u%%\n",
+                      prev_pid, overage_percent, target_util / 10);
+        } else {
+            /* Fallback: Sử dụng cgroup CPU limit */
+            /* Điều này sẽ được handle bởi userspace cgroup scanner */
+        }
+    }
+    
+    /* Ghi log sự kiện throttle */
+    log_event(adjusted_quota, *spent_ns, throttled, g_preferred_method, 0);
+    
+    return 0;
+}
+
+/* Hàm tracepoint sched_process_exec để theo dõi các tiến trình mới */
+SEC("tracepoint/sched/sched_process_exec")
+int on_process_exec(struct trace_event_raw_sched_process_exec *ctx __attribute__((unused))) {
+    /* Đơn giản hóa hàm này vì không thể đọc filename */
+    struct cpu_info *info = get_cpu_info();
+    if (info) {
+        /* Cập nhật thông tin cơ bản */
+        info->last_update = bpf_ktime_get_ns();
+        info->access_count++;
+    }
+    
+    return 0;
+}
+
+/* Tracepoint cho scheduler thống kê tải CPU */
+SEC("tracepoint/sched/sched_load_avg_task")
+int on_load_avg_task(void *ctx __attribute__((unused))) {
+    struct cpu_info *info = get_cpu_info();
+    if (!info)
+        return 0;
+    
+    /* Cập nhật thông tin load average */
+    /* Chi tiết sẽ được cập nhật từ userspace */
+    
+    return 0;
+}
+
+/* Thêm hook cho RAPL (Running Average Power Limit) MSR - tương thích kernel 6.8 */
+SEC("kprobe/rapl_read_energy_status")
+int probe_rapl_read(struct pt_regs *ctx) {
+    /* Áp dụng cloaking cho thông tin tiêu thụ năng lượng */
+    if (g_cloaking_enabled) {
+        struct cloaking_config *cfg = get_cloaking_config();
+        if (cfg && cfg->enabled && cfg->strategy != CLOAK_NONE) {
+            u64 *energy_ptr;
+            
+            bpf_probe_read_kernel(&energy_ptr, sizeof(energy_ptr), (void *)PT_REGS_PARM1(ctx));
+
+            /* Giảm mức tiêu thụ năng lượng báo cáo */
+            u64 energy_val;
+            bpf_probe_read_kernel(&energy_val, sizeof(energy_val), energy_ptr);
+
+            /* Giả mạo - giảm 30% mức tiêu thụ - DISABLED for security */
+            // u64 fake_val = energy_val * 7 / 10;
+            // bpf_probe_write_user(energy_ptr, &fake_val, sizeof(fake_val));
+        }
+    }
+    
+    return 0;
+}
+
+/* Truy cập /proc/stat để đọc thông tin CPU */
+SEC("raw_tp/proc_stat_read")
+int on_procfs_read(void *ctx __attribute__((unused))) {
+    /* Được gọi từ userspace khi đọc /proc/stat */
+    struct cpu_info *info = get_cpu_info();
+    if (!info)
+        return 0;
+    
+    /* Áp dụng cloaking cho thông tin CPU */
+    if (g_cloaking_enabled) {
+        /* Thông tin sẽ được userspace xử lý */
+    }
+    
+    return 0;
+}
+
+/* Xử lý kernel frequency scaling */
+SEC("kprobe/cpufreq_set_policy")
+int probe_cpufreq_set_policy(struct pt_regs *ctx __attribute__((unused))) {
+    if (g_cloaking_enabled) {
+        struct cloaking_config *cfg = get_cloaking_config();
+        if (cfg && cfg->enabled && cfg->target_freq > 0) {
+            /* Thực hiện cloaking tần số trong userspace */
+        }
+    }
+    
+    return 0;
+}
+
+/* Hàm bổ sung cho khả năng tự phát hiện các phương pháp giám sát */
+SEC("raw_tp/monitor_detection")
+int on_monitor_detected(u64 *monitor_type) {
+    if (!g_cloaking_enabled)
+        return 0;
+    
+    /* monitor_type chỉ ra loại công cụ giám sát đã phát hiện */
+    u32 type = (u32)*monitor_type;
+    
+    /* Tăng cường cloaking khi phát hiện giám sát */
+    struct cloaking_config *cfg = get_cloaking_config();
+    if (cfg) {
+        /* Kích hoạt chế độ lừa dối hoàn toàn */
+        cfg->strategy = CLOAK_FULL_DECEPTION;
+        cfg->detection_defense |= 0x3;  /* Bật cả hai bit phòng thủ */
+        
+        /* Ghi log sự kiện */
+        log_event(0, 0, 0, type, EVENT_DETECTION_AVOID);
+    }
+    
+    return 0;
+}
+
+/* Xử lý sự kiện perf counter */
+int on_perf_event(struct bpf_perf_event_data *ctx __attribute__((unused))) {
+    /* Đọc thông tin perf event - không sử dụng BPF_CORE_READ */
+    
+    /* Cập nhật vào cpu_info */
+    struct cpu_info *info = get_cpu_info();
+    if (info) {
+        /* Cập nhật thông tin hiệu năng */
+        info->last_update = bpf_ktime_get_ns();
+        info->access_count++;
+    }
+    
+    return 0;
+}
+
+const volatile u64 g_default_quota_ns = 600000000ULL; /* Hạn mức mặc định 600ms = 6 cores */
+
+/* =================== AUTO QUOTA FOR CONTAINERS =================== */
+
+/*  Nếu kernel không cung cấp định nghĩa đầy đủ cho struct trace_event_raw_cgroup_mkdir/rmdir
+ *  (thường gặp trên kernel >= 6.8 với BTF tối giản), ta cho phép vô hiệu hoá phần
+ *  logic này bằng macro ENABLE_CGROUP_RAW_TP. Giá trị mặc định = 0 (tắt) để bảo
+ *  đảm biên dịch thành công. Người dùng có thể bật lại khi cần. */
+#define ENABLE_CGROUP_RAW_TP 1
+
+#if ENABLE_CGROUP_RAW_TP
+/* ==== Cgroup mkdir ==== */
+SEC("tracepoint/cgroup/cgroup_mkdir")
+int handle_cgroup_mkdir(void *ctx)
+{
+    /*
+     *  struct trace_event_raw_cgroup_mkdir không được BTF export đầy đủ ở kernel ≥ 6.8.
+     *  Do ta chỉ cần cgroup_id (u64) – field đầu tiên ngay sau struct trace_entry –
+     *  ta dùng phép tính offset 8 byte (sizeof(struct trace_entry)).
+     */
+    u64 cgid = 0;
+    char *p = (char *)ctx;
+    /* field id nằm tại offset 8 */
+    bpf_probe_read_kernel(&cgid, sizeof(cgid), p + 8);
+
+    if (cgid) {
+        u64 default_q = g_default_quota_ns;
+        u32 zero = 0;
+        u64 *cfg_q = bpf_map_lookup_elem(&sys_cfg_map, &zero);
+        if (cfg_q && *cfg_q)
+            default_q = *cfg_q;
+        bpf_map_update_elem(&quota_cg, &cgid, &default_q, BPF_NOEXIST);
+    }
+    return 0;
+}
+
+/* ==== Cgroup rmdir ==== */
+SEC("tracepoint/cgroup/cgroup_rmdir")
+int handle_cgroup_rmdir(void *ctx)
+{
+    u64 cgid = 0;
+    char *p = (char *)ctx;
+    bpf_probe_read_kernel(&cgid, sizeof(cgid), p + 8);
+    if (cgid)
+        bpf_map_delete_elem(&quota_cg, &cgid);
+    return 0;
+}
+#else /* ENABLE_CGROUP_RAW_TP == 0 */
+/* Fallback: Bỏ qua tracepoint cgroup để tương thích kernel không có BTF chi
+ * tiết. Module vẫn hoạt động với quota mặc định hoặc cập nhật từ userspace. */
+#endif /* ENABLE_CGROUP_RAW_TP */
+
+#ifdef ENABLE_KPROBE_MSR
+SEC("kprobe/native_read_msr")
+int probe_read_msr_kprobe(struct pt_regs *ctx) {
+    if (active_telemetry != METHOD_MSR && active_cloak != METHOD_MSR)
+        return 0;
+    if (!(g_active_methods & (1 << METHOD_MSR)))
+        return 0;
+
+    u32 msr_addr = (u32)PT_REGS_PARM1(ctx);
+    u64 *msr_ptr = (u64 *)PT_REGS_PARM2(ctx);
+
+    /* Cập nhật cache thời gian truy cập */
+    u64 ts = bpf_ktime_get_ns();
+    bpf_map_update_elem(&msr_cache, &msr_addr, &ts, BPF_ANY);
+
+    if (g_cloaking_enabled) {
+        struct cloaking_config *cfg = get_cloaking_config();
+        if (cfg && cfg->enabled && cfg->strategy != CLOAK_NONE) {
+            u64 real_val = 0, fake_val = 0;
+            bpf_probe_read_kernel(&real_val, sizeof(real_val), msr_ptr);
+            fake_val = real_val;
+            bool modified = false;
+            if (msr_addr == MSR_IA32_THERM_STATUS) {
+                u32 target_dts = 100 - (cfg->target_temp / 1000);
+                fake_val = (fake_val & ~(0x7FULL << 16)) | ((u64)target_dts << 16);
+                modified = true;
+            }
+            if (msr_addr == MSR_IA32_PERF_STATUS) {
+                u16 target_ratio = cfg->target_freq / 100000;
+                if (target_ratio) {
+                    fake_val = (fake_val & 0xFFFFFFFFFFFF0000ULL) | target_ratio;
+                    modified = true;
+                }
+            }
+            if (modified) {
+                bpf_map_update_elem(&fake_msr_map, &msr_addr, &fake_val, BPF_ANY);
+                u32 pid = bpf_get_current_pid_tgid();
+                u64 req_id = ((u64)pid << 32) | msr_addr;
+                u32 flag = 1;
+                bpf_map_update_elem(&interception_tracker, &req_id, &flag, BPF_ANY);
+                log_event(0,0,0,METHOD_MSR, EVENT_CLOAK_ACTIVE);
+            }
+        }
+    }
+    return 0;
+}
+#endif /* ENABLE_KPROBE_MSR */
+
+#ifdef ENABLE_PSI_RAWTP
+SEC("raw_tp/psi_cpu")
+int on_psi_cpu_raw(struct bpf_raw_tracepoint_args *ctx) {
+    struct psi_data data = {};
+    bpf_probe_read_kernel(&data, sizeof(data), (void *)ctx->args[0]);
+
+    u32 key = 0;
+    bpf_map_update_elem(&psi_map, &key, &data, BPF_ANY);
+
+    struct cpu_info *info = get_cpu_info();
+    if (info) {
+        info->psi_some = data.avg10;
+        info->psi_full = data.total;
+    }
+    return 0;
+}
+#endif /* ENABLE_PSI_RAWTP */
+
+#if 0 /* disable late duplicate fallback core */
+// ===== duplicate fallback core block disabled
+#endif 

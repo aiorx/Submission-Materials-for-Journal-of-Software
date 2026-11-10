@@ -1,0 +1,76 @@
+var Address = require('@graphprotocol/graph-ts').Address;
+var BigInt = require('@graphprotocol/graph-ts').BigInt;
+var BigDecimal = require('@graphprotocol/graph-ts').BigDecimal;
+var LOG_NEW_POOL = require('../types/Factory/Factory').LOG_NEW_POOL;
+var Balancer = require('../types/schema').Balancer;
+var Pool = require('../types/schema').Pool;
+var PoolContract = require('../types/templates').Pool;
+var CrpControllerContract = require('../types/templates').CrpController;
+import {
+  ZERO_BD,
+  isCrp,
+  getCrpController,
+  getCrpSymbol,
+  getCrpName,
+  getCrpRights,
+  getCrpCap
+} from './helpers'
+var ConfigurableRightsPool = require('../types/Factory/ConfigurableRightsPool').ConfigurableRightsPool;
+
+function handleNewPool(event: LOG_NEW_POOL): void {
+  let factory = Balancer.load('1')
+
+  // if no factory yet, set up blank initial
+  if (factory == null) {
+    factory = new Balancer('1')
+    factory.color = 'Bronze'
+    factory.poolCount = 0
+    factory.finalizedPoolCount = 0
+    factory.crpCount = 0
+    factory.txCount = BigInt.fromI32(0)
+    factory.totalLiquidity = ZERO_BD
+    factory.totalSwapVolume = ZERO_BD
+    factory.totalSwapFee = ZERO_BD
+  }
+
+  let pool = new Pool(event.params.pool.toHexString())
+  pool.crp = isCrp(event.params.caller)
+  pool.rights = []
+  if (pool.crp) {
+    factory.crpCount += 1
+    let crp = ConfigurableRightsPool.bind(event.params.caller)
+    pool.symbol = getCrpSymbol(crp)
+    pool.name = getCrpName(crp)
+    pool.crpController = Address.fromString(getCrpController(crp))
+    pool.rights = getCrpRights(crp)
+    pool.cap = getCrpCap(crp)
+
+    // Listen for any future crpController changes.
+    CrpControllerContract.create(event.params.caller)
+  }
+  pool.controller = event.params.caller
+  pool.publicSwap = false
+  pool.finalized = false
+  pool.active = true
+  pool.swapFee = BigDecimal.fromString('0.000001')
+  pool.totalWeight = ZERO_BD
+  pool.totalShares = ZERO_BD
+  pool.totalSwapVolume = ZERO_BD
+  pool.totalSwapFee = ZERO_BD
+  pool.liquidity = ZERO_BD
+  pool.createTime = event.block.timestamp.toI32()
+  pool.tokensCount = BigInt.fromI32(0)
+  pool.holdersCount = BigInt.fromI32(0)
+  pool.joinsCount = BigInt.fromI32(0)
+  pool.exitsCount = BigInt.fromI32(0)
+  pool.swapsCount = BigInt.fromI32(0)
+  pool.factoryID = event.address.toHexString()
+  pool.tokensList = []
+  pool.tx = event.transaction.hash
+  pool.save()
+
+  factory.poolCount = factory.poolCount + 1
+  factory.save()
+
+  PoolContract.create(event.params.pool)
+}

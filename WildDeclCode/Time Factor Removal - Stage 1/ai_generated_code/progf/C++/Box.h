@@ -1,0 +1,19 @@
+#pragma once
+
+#include "RayTracer.h"
+#include "Object.h"
+#include "BoundingBox.h"
+
+class Box : public Object
+{
+public:
+	Box(const Bounds3<float>& box, const int&& material_index) : Object(glm::vec3(0.0), material_index), m_Box(box) {}
+
+	// Hit detection method Aided using common development resources!
+	virtual bool Hit(const Ray& r, float tMin, float tMax, float& hitDistance) const override;
+
+	virtual ObjectType GetType() const override { return ObjectType::BoundingBox; }
+
+public:
+	Bounds3<float> m_Box;
+};

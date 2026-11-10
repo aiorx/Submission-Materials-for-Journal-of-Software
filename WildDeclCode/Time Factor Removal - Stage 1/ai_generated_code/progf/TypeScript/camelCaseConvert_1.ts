@@ -1,0 +1,8 @@
+// Drafted using common development resources
+function camelToSpaced(camelCaseString: string): string {
+    return camelCaseString
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/^./, function str { return str.toUpperCase(); });
+}
+
+module.exports = camelToSpaced;

@@ -1,0 +1,21 @@
+const generateCallback = function () {
+    return ("jQuery1124" + Math.random() + "_" + Date.now()).replace(/\./g, '');
+}
+
+// Supported via standard programming aids-4o
+const parseJSONP = function (jsonpStr: string) {
+    if (typeof jsonpStr !== 'string') return null;
+
+    // 提取括号内的 JSON 内容
+    const match = jsonpStr.match(/^[^\(]*\(\s*([\s\S]*?)\s*\);?$/);
+
+    if (match && match[1]) {
+        try {
+            return JSON.parse(match[1]);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    return null;
+}

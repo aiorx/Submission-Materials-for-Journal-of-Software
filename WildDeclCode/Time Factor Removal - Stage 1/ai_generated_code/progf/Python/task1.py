@@ -1,0 +1,69 @@
+# The following code is Supported via standard programming aids, and the prompt used is "how to plot reading from arduino using python".
+# The generated code is then refined many times by telling it the problem I encountered, then it generated the new and improved code.
+
+#Also referenced from ChatGPT response from prompt: "using matplotlib animate blitting to graph real-time data from arduino" 
+
+import serial
+import time
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from collections import deque
+
+arduino = serial.Serial('COM6', 9600, timeout=0.1)  
+
+# Set up for plotting
+#plt.ion()  # Enable interactive mode for live plotting
+
+max_points = 200
+x_vals = deque(maxlen = max_points)  # List to store x values (time or number of readings)
+y_vals = deque(maxlen = max_points)  # List to store y values (sensor readings)
+
+fig, ax = plt.subplots()
+line, = ax.plot([], [], lw=2)
+
+ax.set_xlim(0, max_points)
+ax.set_ylim(-100, 100)
+
+ax.set_xlabel('Data point')
+ax.set_ylabel('Angle in degrees')
+
+ax.set_title('Real Data from arduino via a serial port')
+#ax.legend()
+
+def init():
+    line.set_data([],[])
+    return line,
+
+# Update function for blitting
+def update(frame):
+    # Read a line of data from the Arduino
+    try:
+        line_data = arduino.readline().decode('utf-8').strip()
+        sensor_value = float(line_data)
+    except ValueError:
+        return line,
+
+    # Update x and y data
+    if len(x_vals) == 0:
+        x_vals.append(0)
+    else:
+        x_vals.append(x_vals[-1] + 1)  # Increment x based on time steps
+    
+    y_vals.append(sensor_value)
+
+    # Update the plot line
+    line.set_data(x_vals, y_vals)
+
+    ax.set_xlim(x_vals[0], x_vals[-1])
+
+    return line,
+    
+
+# Create animation
+ani = FuncAnimation(fig, update, init_func=init, blit=True, interval=1)
+
+# Show plot
+plt.show()
+
+# Close the serial connection when done
+arduino.close()

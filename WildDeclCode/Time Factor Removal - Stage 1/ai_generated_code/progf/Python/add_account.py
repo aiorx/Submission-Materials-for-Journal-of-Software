@@ -1,0 +1,67 @@
+import os
+import json
+import base64
+from flask import Flask, request, jsonify
+from Crypto.Cipher import AES
+from Crypto.Hash import SHA1
+from Crypto.Random import get_random_bytes
+from google.cloud import firestore
+
+app = Flask(__name__)
+db = firestore.Client()
+
+# Function to pad the plaintext to be a multiple of 16 bytes
+def pad(s):
+    pad_len = 16 - len(s) % 16
+    return s + chr(pad_len) * pad_len
+
+def encrypt_aes(plaintext, key):
+    iv = get_random_bytes(16)
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    ct_bytes = cipher.encrypt(pad(plaintext).encode('utf-8'))
+    return base64.b64encode(iv + ct_bytes).decode('utf-8')
+
+# Google Cloud Function entry point to add an locker account to a user's vault
+# Function outline Supported via standard GitHub programming aids
+
+'''
+The function expects a JSON payload with the following fields:
+- username: The user's username
+- master_password: The user's master password
+- account_id: Unique identifier for the account
+- account_username: Username for the account being added
+- account_password: Password for the account being added
+- comment: Optional comment for the account
+
+The function will encrypt the account password using AES encryption with a key derived from the master password.
+The encrypted password will be stored in Firestore under the user's document in the 'accounts' subcollection.
+'''
+
+@app.route('/add_account', methods=['POST'])
+def add_account(request):
+    data = request.get_json(silent=True)
+
+    username = data.get('username')
+    master_password = data.get('master_password')
+    account_id = data.get('account_id')
+    account_username = data.get('account_username')
+    account_password = data.get('account_password')
+    comment = data.get('comment', '')
+
+    if not all([username, master_password, account_id, account_username, account_password]):
+        return jsonify({'error': 'Missing required fields'}), 400
+    
+    key = SHA1.new(master_password.encode('utf-8')).digest()[:16]
+    encrypted_password = encrypt_aes(account_password, key)
+
+    # Store in Firestore under users/{username}/accounts/{account_id}
+    db.collection('users').document(username).collection('accounts').document(account_id).set({
+        'account_id': account_id,
+        'account_username': account_username,
+        'account_password': encrypted_password,
+        'comment': comment
+    })
+    return jsonify({'message': 'Account added successfully'})
+
+if __name__ == '__main__':
+    app.run(debug=True)

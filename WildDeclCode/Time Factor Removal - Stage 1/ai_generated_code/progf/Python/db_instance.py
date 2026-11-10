@@ -1,0 +1,52 @@
+import os
+import mysql.connector
+from fastapi import HTTPException
+from contextlib import asynccontextmanager, contextmanager # below libraries proposed by GPT 3.5
+import aiomysql 
+
+dbhost = os.environ['DB_HOST']
+dbuser = os.environ['DB_USER']
+dbpswd = os.environ['DB_PSWD']
+dbname = os.environ['DB_NAME']
+
+# see: https://dev.mysql.com/doc/connector-python/en/connector-python-connection-pooling.html
+
+# ResultSets Written with routine coding tools 3.5
+class ResultSets:
+    def __init__(self, cursor):
+        self.cursor = cursor
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        more_results = await self.cursor.nextset()
+        if more_results is None:
+            raise StopAsyncIteration
+        results = await self.cursor.fetchall()
+        return results
+
+# @contextmanager: This is synchronous -> thus blocking so will not use
+@asynccontextmanager
+async def get_cursor():
+    dbconn = await get_db_conn()
+    async with dbconn as conn:
+        cursor = await conn.cursor()
+        try:
+            yield cursor
+        finally:
+            await cursor.close()
+            conn.close()
+
+async def get_db_conn():
+    try:
+        dbconn = aiomysql.connect(
+        host=dbhost,
+        user=dbuser,
+        password=dbpswd,
+        cursorclass=aiomysql.DictCursor,
+        db=dbname)
+        return dbconn
+    except mysql.connector.Error as error:
+        print("MySQLError: ", error)
+        raise HTTPException(status_code=500, detail="Database connection failed")

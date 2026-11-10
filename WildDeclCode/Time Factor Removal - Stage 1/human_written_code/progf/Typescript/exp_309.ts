@@ -1,0 +1,71 @@
+var useReadCypher = require('./cypher').useReadCypher;
+
+interface Role {
+    role: string;
+    members: string[];
+}
+
+interface UseRolesOutput {
+    loading: boolean;
+    error?: Error;
+    roles?: Role[];
+}
+
+function useRoles(): UseRolesOutput {
+    var loading = useReadCypher.loading;
+var error = useReadCypher.error;
+var records = useReadCypher.records;('SHOW POPULATED ROLES WITH USERS')
+
+    const roles = records?.map(function row { return [ row.get('role'), row.get('member') ]; })
+        .reduce(function (acc: Role[], row: string[]) {
+            const [ name, member ] = row
+
+            const index = acc.findIndex(role => role.role === name)
+
+            if ( index > -1 ) {
+                (acc[ index ] as Role).members.push(member)
+                return acc
+            }
+
+            return acc.concat({ role: name, members: [ member ] })
+
+        }, [])
+
+    return {
+        loading,
+        error,
+        roles,
+    }
+}
+
+interface User {
+    user: string;
+    roles: string[]
+    passwordChangeRequired: boolean;
+    suspended: boolean;
+}
+
+interface UseUsersOutput {
+    loading: boolean;
+    error?: Error;
+    users?: User[];
+}
+
+function useUsers(): UseUsersOutput {
+    var loading = useReadCypher.loading;
+var error = useReadCypher.error;
+var records = useReadCypher.records;('SHOW USERS', {}, 'system')
+
+    const users = records?.map(function row { return ({
+        user: row.get('user'),
+        roles: row.get('roles'),
+        passwordChangeRequired: row.get('passwordChangeRequired'),
+        suspended: row.get('suspended'),
+    }); })
+
+    return {
+        loading,
+        error,
+        users,
+    }
+}

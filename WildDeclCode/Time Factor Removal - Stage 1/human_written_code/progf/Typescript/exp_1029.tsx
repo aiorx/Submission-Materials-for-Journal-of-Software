@@ -1,0 +1,36 @@
+var mount = require('@vue/test-utils').mount;
+
+var useClickAway = require('../index');
+var ref = require('vue').ref;
+
+describe('useClickAway', function () {
+  test('should work with custom funtion', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    const fn = jest.fn(() => {});
+    const eleRef = ref(null);
+    const wrapRef = ref(null);
+    let removeListener!: () => void;
+    const wrapper = mount({
+      setup() {
+        removeListener = useClickAway(eleRef, fn, 'click', wrapRef);
+        return { eleRef, wrapRef };
+      },
+      render() {
+        return (
+          <div ref="wrapRef">
+            <h1 ref="eleRef"></h1>
+            <h2>h2</h2>
+          </div>
+        );
+      },
+    });
+    await wrapper.vm.$nextTick();
+    wrapper.find('h1').trigger('click');
+    expect(fn).toHaveBeenCalledTimes(0);
+    wrapper.find('h2').trigger('click');
+    expect(fn).toHaveBeenCalledTimes(1);
+    removeListener();
+    wrapper.find('h2').trigger('click');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+});

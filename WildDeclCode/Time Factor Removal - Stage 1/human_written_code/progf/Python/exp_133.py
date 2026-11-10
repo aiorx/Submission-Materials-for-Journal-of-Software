@@ -1,0 +1,11 @@
+
+'''
+@Author: simonKing
+@License: (C) Copyright 2013-2019, Best Wonder Corporation Limited.
+@Os：Windows 10 x64
+@Contact: bw_wangxiaomeng@whty.com.cn
+@Software: PY PyCharm 
+@File: __init__.py.py
+@Time: 2019/7/12 16:30
+@Desc: define your function
+'''

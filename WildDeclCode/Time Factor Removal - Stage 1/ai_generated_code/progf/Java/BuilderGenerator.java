@@ -1,0 +1,240 @@
+package fruitfly.psi;
+
+import com.intellij.psi.JavaPsiFacade;
+import com.intellij.psi.PsiClass;
+import com.intellij.psi.PsiElement;
+import com.intellij.psi.PsiElementFactory;
+import com.intellij.psi.PsiMethod;
+import com.intellij.psi.PsiRecordComponent;
+import com.intellij.psi.codeStyle.JavaCodeStyleManager;
+import org.jetbrains.annotations.NotNull;
+
+import java.util.Arrays;
+import java.util.List;
+import java.util.StringJoiner;
+
+import static fruitfly.ide.RecordMemberChooser.mapRecordComponentNames;
+
+public class BuilderGenerator {
+
+  /**
+   Delete and re-generate builder code in the given record class.
+   Most of the code in this method was Assisted with basic coding tools 4.
+   Not in one go, but it wrote most of core logic - I just put it together and
+   then structured it a bit more cleanly.
+   */
+  public static void generateBuilderPattern(
+    PsiClass recordClass,
+    List<String> selectFieldNames
+  ) {
+    assert recordClass.isRecord() :
+      "this implementation is designed only for records";
+    var selectedFields = mapNamesToFields(recordClass, selectFieldNames);
+
+    removeBuilderClasses(recordClass);
+
+    // denotes the `}` token that declares the end of the class
+    PsiElement endOfClass = recordClass.getLastChild();
+
+    // create builder pattern structures and add them to the record
+    PsiElement builderClass = recordClass.addBefore(
+      createBuilderClass(recordClass, selectedFields),
+      endOfClass );
+    PsiElement butMethod = recordClass.addBefore(
+      createButMethod(recordClass, selectedFields),
+      builderClass );
+    PsiElement builderMethod = recordClass.addBefore(
+      createBuilderMethod(recordClass, selectedFields),
+      butMethod );
+
+    formatRecordCode(recordClass, builderClass);
+  }
+
+  @NotNull
+  public static PsiClass createBuilderClass(
+    PsiClass recordClass,
+    PsiRecordComponent[] components
+  ) {
+    PsiElementFactory elementFactory =
+      JavaPsiFacade.getElementFactory(recordClass.getProject());
+
+    StringBuilder text = new StringBuilder(
+      "public static class Builder {");
+
+    for( PsiRecordComponent component : components ){
+      String fieldName = component.getName();
+      String fieldType = component.getType().getCanonicalText();
+
+      text.append("private ")
+        .append(fieldType)
+        .append(" ")
+        .append(fieldName)
+        .append(";");
+      text.append("public Builder ")
+        .append(fieldName)
+        .append("(")
+        .append(fieldType)
+        .append(" ")
+        .append(fieldName)
+        .append(") {");
+      text.append("this.")
+        .append(fieldName)
+        .append(" = ")
+        .append(fieldName)
+        .append(";");
+      text.append("return this;");
+      text.append("}");
+    }
+
+    // Append build method to Builder class
+    text.append("public ")
+      .append(recordClass.getName())
+      .append(" build() {");
+    text.append("return new ")
+      .append(recordClass.getName())
+      .append("(");
+    StringJoiner parameters = new StringJoiner(", ");
+    for( PsiRecordComponent component : components ){
+      parameters.add("this." + component.getName());
+    }
+    text.append(parameters).append(");");
+    text.append("}}");
+
+
+    PsiClass dummyClass = elementFactory.createClassFromText(
+      text.toString(), recordClass);
+
+   /* It seems the createClassFromText() method generates a _Dummy_ parent
+     class for the inner class, we don't care about that - so dig out the
+     Builder class and return it */
+    return dummyClass.getInnerClasses()[0];
+  }
+
+  public static PsiMethod createBuilderMethod(
+    PsiClass recordClass,
+    PsiRecordComponent[] components
+  ) {
+    PsiElementFactory elementFactory =
+      JavaPsiFacade.getElementFactory(recordClass.getProject());
+
+    // Generate the static builder() method that returns an instance of the
+    // Builder class
+    String text = "public static Builder builder() {" +
+      "return new Builder();" +
+      "}";
+
+    return elementFactory.createMethodFromText(
+      text,
+      recordClass);
+  }
+
+  public static PsiMethod createButMethod(
+    PsiClass recordClass,
+    PsiRecordComponent[] components
+  ) {
+    PsiElementFactory elementFactory =
+      JavaPsiFacade.getElementFactory(recordClass.getProject());
+
+    StringBuilder text = new StringBuilder(
+      "public Builder but() {");
+    text.append("return new Builder()");
+
+    for( PsiRecordComponent component : components ){
+      String fieldName = component.getName();
+      text.append(".")
+        .append(fieldName)
+        .append("(")
+        .append(fieldName)
+        .append(")");
+    }
+
+    text.append(";");
+    text.append("}");
+
+    return elementFactory.createMethodFromText(
+      text.toString(),
+      recordClass);
+  }
+
+  /**
+   Removes the following:
+   - `builder()` instance method
+   - `but()` instance method
+   - `Builder` nested class
+   */
+  public static void removeBuilderClasses(PsiClass recordClass) {
+    // check if Builder class already exists and delete it
+    PsiClass[] innerClasses = recordClass.getInnerClasses();
+    for( PsiClass innerClass : innerClasses ){
+      if( "Builder".equals(innerClass.getName()) ){
+        innerClass.delete();
+        break; // Assuming only one Builder class exists
+      }
+    }
+
+    // Check if the but() method already exists and delete it
+    PsiMethod[] methods = recordClass.getMethods();
+    for( PsiMethod method : methods ){
+      // Check for method name and parameter count to identify the but() method
+      if( "but".equals(method.getName()) && method.getParameterList()
+        .getParametersCount() == 0 ){
+        method.delete();
+        break; // Assuming only one but() method exists
+      }
+    }
+
+    // Check if the builder() method already exists and delete it
+    for( PsiMethod method : methods ){
+      if( "builder".equals(method.getName()) && method.getParameterList()
+        .getParametersCount() == 0 ){
+        method.delete();
+        break; // Assuming only one builder() method exists
+      }
+    }
+  }
+
+  /**
+   Maps the given fieldNames to an array of PSI objects that they represent on
+   the recordClass.
+   */
+  @NotNull
+  public static PsiRecordComponent[] mapNamesToFields(
+    PsiClass recordClass,
+    List<String> selectFieldNames
+  ) {
+    return Arrays.stream(recordClass.getRecordComponents()).
+      filter(i->selectFieldNames.contains(i.getName())).
+      toArray(PsiRecordComponent[]::new);
+  }
+
+  /**
+   Reformat code to adhere to project's code style settings
+   */
+  public static void formatRecordCode(
+    PsiClass recordClass,
+    PsiElement builderClass
+  ) {
+    JavaCodeStyleManager styleManager =
+      JavaCodeStyleManager.getInstance(recordClass.getProject());
+    styleManager.shortenClassReferences(builderClass);
+    styleManager.optimizeImports(recordClass.getContainingFile());
+  }
+
+
+  /**
+   Convenience method for the unit tests.
+   */
+  public static void generateBuilderPattern(
+    PsiClass recordClass
+  ) {
+    generateBuilderPattern(
+      recordClass,
+      mapRecordComponentNames(recordClass));
+  }
+
+  public static @NotNull List<PsiRecordComponent>
+  getComponents(@NotNull PsiClass recordClass) {
+    return Arrays.asList(recordClass.getRecordComponents());
+  }
+
+}

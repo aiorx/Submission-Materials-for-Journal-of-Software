@@ -1,0 +1,34 @@
+var describe = require('vitest').describe;
+var expect = require('vitest').expect;
+var test = require('vitest').test;
+
+var createAccount = require('./account').createAccount;
+
+// Aided with basic GitHub coding tools
+
+describe("createAccount", function () {
+  test("should create valid account", () => {
+    const accountData = {
+      provider_id: "auth0",
+      account_id: "account-123",
+    };
+
+    const result = createAccount(accountData);
+
+    const account = result._unsafeUnwrap();
+    expect(account.provider_id).toBe("auth0");
+    expect(account.account_id).toBe("account-123");
+  });
+
+  test("should reject invalid provider ID", () => {
+    const accountData = {
+      provider_id: "google",
+      account_id: "account-123",
+    };
+
+    const result = createAccount(accountData);
+
+    const errors = result._unsafeUnwrapErr();
+    expect(errors).toContain("InvalidProviderId");
+  });
+});

@@ -1,0 +1,32 @@
+
+/**
+ * github-stars-contributions
+ * Log your GitHub Stars Contributions with the ease of a command line CLI
+ *
+ * @author Ahmad Awais <https://twitter.com/_AhmadAwais/>
+ */
+const checkNode = require('cli-check-node');
+checkNode('14');
+
+const init = require('./utils/init');
+const cli = require('./utils/cli');
+const log = require('./utils/log');
+
+const input = cli.input;
+const flags = cli.flags;
+var clear = flags.clear;
+var debug = flags.debug;
+
+const contributions = require('./utils/contributions');
+const remove = require('./utils/remove');
+
+(async function () {
+	await init({ clear });
+
+	input.includes("help") && cli.showHelp(0);
+	input.includes("remove") && (await remove());
+
+	await contributions();
+
+	debug && log(flags);
+})();

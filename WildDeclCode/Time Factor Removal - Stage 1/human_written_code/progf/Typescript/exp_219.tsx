@@ -1,0 +1,11 @@
+var ContentLoader = require('./ContentLoader');
+var FacebookLoader = require('./FacebookLoader');
+var InstagramLoader = require('./InstagramLoader');
+var BulletsLoader = require('./Bullets');
+module.exports = ContentLoader;
+module.exports.FacebookLoader = FacebookLoader;
+module.exports.BulletsLoader = BulletsLoader;
+module.exports.InstagramLoader = InstagramLoader;
+const Facebook = FacebookLoader;
+const Instagram = InstagramLoader;
+const Bullets = BulletsLoader;

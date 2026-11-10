@@ -1,0 +1,209 @@
+/*
+██╗      █████╗ ███████╗██╗   ██╗██╗      ██████╗  █████╗ ██████╗ ███████╗██████╗    ██╗  ██╗
+██║     ██╔══██╗╚══███╔╝╚██╗ ██╔╝██║     ██╔═══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗   ██║  ██║
+██║     ███████║  ███╔╝  ╚████╔╝ ██║     ██║   ██║███████║██║  ██║█████╗  ██████╔╝   ███████║
+██║     ██╔══██║ ███╔╝    ╚██╔╝  ██║     ██║   ██║██╔══██║██║  ██║██╔══╝  ██╔══██╗   ██╔══██║
+███████╗██║  ██║███████╗   ██║   ███████╗╚██████╔╝██║  ██║██████╔╝███████╗██║  ██║██╗██║  ██║
+╚══════╝╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝
+*/
+
+/*
+MIT License
+
+Copyright (c) 2025 A-McD Technology LLC
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
+/*
+
+██╗      █████╗ ███████╗██╗   ██╗    ██╗      ██████╗  █████╗ ██████╗ ███████╗██████╗ 
+██║     ██╔══██╗╚══███╔╝╚██╗ ██╔╝    ██║     ██╔═══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗
+██║     ███████║  ███╔╝  ╚████╔╝     ██║     ██║   ██║███████║██║  ██║█████╗  ██████╔╝
+██║     ██╔══██║ ███╔╝    ╚██╔╝      ██║     ██║   ██║██╔══██║██║  ██║██╔══╝  ██╔══██╗
+███████╗██║  ██║███████╗   ██║       ███████╗╚██████╔╝██║  ██║██████╔╝███████╗██║  ██║
+╚══════╝╚═╝  ╚═╝╚══════╝   ╚═╝       ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═╝
+
+Support classes for lazy loading objects and resources. Useful for anything that loads
+from disk, network, or other slow sources. The Lazy class is a thread safe wrapper around
+a value that is initialized lazily. The LazyLoadable class is an interface that objects
+can implement to define how they are initialized and unloaded.
+
+Code was Supported via standard programming aids.
+
+See bottom of file for example usage.
+
+*/
+#ifndef LAZYLOADER_H
+#define LAZYLOADER_H
+
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <iostream>
+#include <type_traits>
+
+class LazyLoadable {
+public:
+    virtual ~LazyLoadable() = default;
+
+    // Define how the object is initialized
+    virtual void initialize() {
+        this->initialized = true;
+    }
+
+    // Define cleanup logic for unloading resources
+    virtual void unload() {
+        this->initialized = false;
+    }
+
+    // For debugging or logging purposes
+    bool is_initialized() const {
+        return this->initialized;
+    }
+protected:
+    bool initialized = false;
+};
+
+
+template <typename T>
+class LazyLoader {
+public:
+    // Constructor accepts a custom initializer function
+    explicit LazyLoader(std::function<T()> initializer)
+        : initializer_(std::move(initializer)) {}
+
+    // Constructor for LazyLoadable types (no custom initializer needed)
+    LazyLoader() requires std::is_base_of_v<LazyLoadable, T> {}
+
+    // Access the value, initializing it if necessary
+    T& get() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!value_) {
+            if constexpr (std::is_base_of_v<LazyLoadable, T>) {
+                value_ = T();          // Default-construct the object
+                value_->initialize(); // Initialize if LazyLoadable
+            } else {
+                value_ = initializer_();
+            }
+        }
+        return *value_;
+    }
+
+    // Reset the cached value completely, clearing all data
+    void reset() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if constexpr (std::is_base_of_v<LazyLoadable, T>) {
+            if (value_) value_->unload(); // Explicitly unload resources
+        }
+        value_.reset(); // Clear the optional
+    }
+
+    // Unload the cached value's resources but keep the Lazy object ready for reuse
+    void unload() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if constexpr (std::is_base_of_v<LazyLoadable, T>) {
+            if (value_) {
+                value_->unload();
+            }
+        }
+        // Note: Don't reset `value_`, just leave it "uninitialized".
+    }
+
+    // Check if the value has been initialized
+    bool is_initialized() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return value_.has_value();
+    }
+
+private:
+    std::function<T()> initializer_; // Custom initializer function
+    mutable std::mutex mutex_;      // Ensure thread safety
+    std::optional<T> value_;        // Cache the value
+};
+
+#endif// LAZYLOADER_H
+
+
+/*
+Example 1. Usage of the Lazy and LazyLoadable classes
+Example 2: Using a non-LazyLoadable type (below)
+
+
+
+// Example 1. Usage of the Lazy and LazyLoadable classes
+LazyLoader<LazyLoadableClass> lazyLoadedObject;
+LazyLoadableClass& lazy = lazyLoadedObject.get(); // After this, we can use the object as usual
+CubeLog::info("LazyLoadableClass initialized: " + std::to_string(lazy.is_initialized()));
+CubeLog::info("LazyLoadableClass data size: " + std::to_string(lazy.data.size()));
+lazy.initialize();
+CubeLog::info("LazyLoadableClass initialized: " + std::to_string(lazy.is_initialized()));
+CubeLog::info("LazyLoadableClass data size: " + std::to_string(lazy.data.size()));
+lazy.unload();
+CubeLog::info("LazyLoadableClass unloaded: " + std::to_string(lazy.is_initialized()));
+CubeLog::info("LazyLoadableClass data size: " + std::to_string(lazy.data.size()));
+
+// Declaration of a class that lazily loads its resources
+class LazyLoadableClass: protected LazyLoadable {
+public:
+    LazyLoadableClass();
+    void initialize() override;
+    void unload() override;
+    std::vector<uint64_t> data;
+};
+
+// Specification of a class that lazily loads its resources
+LazyLoadableClass::LazyLoadableClass()
+{
+    CubeLog::info("LazyLoadableClass constructor called");
+}
+
+void LazyLoadableClass::initialize()
+{
+    CubeLog::info("LazyLoadableClass initialize called");
+    if (this->initialized)
+        return;
+    // Simulate loading a large resource
+    for (size_t i = 0; i < 100'000; i++) {
+        this->data.push_back(i);
+    }
+    LazyLoadable::initialize(); // Be sure to call the base class method
+}
+
+void LazyLoadableClass::unload()
+{
+    CubeLog::info("LazyLoadableClass unload called");
+    // Simulate unloading the resource
+    this->data.clear();
+    LazyLoadable::unload(); // Be sure to call the base class method
+}
+
+
+
+
+// Example 2: Using a non-LazyLoadable type
+Lazy<int> lazyInt([]() {
+    // This lambda will be called only once when the value is first accessed
+    std::cout << "Initializing lazy integer!" << std::endl;
+    return 123;
+});
+
+std::cout << "Before accessing lazyInt..." << std::endl;
+std::cout << "Value: " << lazyInt.get() << std::endl;
+ */

@@ -1,0 +1,91 @@
+# all Python code Assisted using common GitHub development utilities from the prompt comment
+
+# import libraries
+import numpy as np
+from scipy.stats import norm
+import pandas as pd
+
+
+# function to calculate Black-Scholes option price
+def black_scholes(S, K, T, r, sigma, option_type):
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    if option_type == 'call':
+        price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+    elif option_type == 'put':
+        price = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+    return price
+
+
+# function to compute the Greeks
+def greeks(S, K, T, r, sigma, option_type):
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    if option_type == 'call':
+        delta = norm.cdf(d1)
+        gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
+        vega = S * norm.pdf(d1) * np.sqrt(T)
+        theta = -(S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) - r * K * np.exp(-r * T) * norm.cdf(d2)
+        rho = K * T * np.exp(-r * T) * norm.cdf(d2)
+    elif option_type == 'put':
+        delta = -norm.cdf(-d1)
+        gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
+        vega = S * norm.pdf(d1) * np.sqrt(T)
+        theta = -(S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) + r * K * np.exp(-r * T) * norm.cdf(-d2)
+        rho = -K * T * np.exp(-r * T) * norm.cdf(-d2)
+    return delta, gamma, vega, theta, rho
+
+
+# function to generate 300 interest rate paths with a two-factor model
+def generate_paths(S0, r0, sigma, rho, T, N, M):
+    dt = T / N
+    paths = np.zeros((M, N + 1))
+    paths[:, 0] = S0
+    for t in range(1, N + 1):
+        z1 = np.random.standard_normal(M)
+        z2 = rho * z1 + np.sqrt(1 - rho ** 2) * np.random.standard_normal(M)
+        paths[:, t] = paths[:, t - 1] * np.exp((r0 - 0.5 * sigma ** 2) * dt + sigma * np.sqrt(dt) * z1)
+    return paths
+
+
+# function to compute the option price via Monte Carlo simulation
+def monte_carlo(S0, K, T, r, sigma, option_type, N, M):
+    dt = T / N
+    paths = generate_paths(S0, r, sigma, 0.0, T, N, M)
+    payoff = np.maximum(0, paths[:, -1] - K) if option_type == 'call' else np.maximum(0, K - paths[:, -1])
+    price = np.exp(-r * T) * np.sum(payoff) / M
+    return price
+
+# generate pandas dataframe with 5 synthetic option data
+data = pd.DataFrame({'S0': [100, 100, 100, 100, 100],
+                        'K': [100, 100, 100, 100, 100],
+                        'T': [1, 1, 1, 1, 1],
+                        'r': [0.05, 0.05, 0.05, 0.05, 0.05],
+                        'sigma': [0.2, 0.2, 0.2, 0.2, 0.2],
+                        'option_type': ['call', 'put', 'call', 'put', 'call']})
+
+# compute options prices for each row in the dataframe
+data['price'] = data.apply(lambda x: black_scholes(x['S0'], x['K'], x['T'], x['r'], x['sigma'], x['option_type']), axis=1)
+
+# compute option greeks for each row in the dataframe
+data['delta'], data['gamma'], data['vega'], data['theta'], data['rho'] = zip(*data.apply(lambda x: greeks(x['S0'], x['K'], x['T'], x['r'], x['sigma'], x['option_type']), axis=1))
+
+# compute option prices via Monte Carlo simulation
+data['price_mc'] = data.apply(lambda x: monte_carlo(x['S0'], x['K'], x['T'], x['r'], x['sigma'], x['option_type'], 100, 10000), axis=1)
+
+# pandas option print 16 columns and width of 120
+pd.set_option('display.width', 120)
+pd.set_option('display.max_columns', 16)
+
+# print the dataframe
+print(data)
+
+
+# output from the above print(data) command
+#     S0    K  T     r  sigma option_type      price     delta     gamma       vega     theta        rho   price_mc
+# 0  100  100  1  0.05    0.2        call  10.450584  0.636831  0.018762  37.524035 -6.414028  53.232482  10.487134
+# 1  100  100  1  0.05    0.2         put   5.573526 -0.363169  0.018762  37.524035 -1.657880 -41.890461   5.554286
+# 2  100  100  1  0.05    0.2        call  10.450584  0.636831  0.018762  37.524035 -6.414028  53.232482  10.666894
+# 3  100  100  1  0.05    0.2         put   5.573526 -0.363169  0.018762  37.524035 -1.657880 -41.890461   5.350418
+# 4  100  100  1  0.05    0.2        call  10.450584  0.636831  0.018762  37.524035 -6.414028  53.232482  10.254415
+#

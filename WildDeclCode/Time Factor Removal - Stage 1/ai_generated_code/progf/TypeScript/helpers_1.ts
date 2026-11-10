@@ -1,0 +1,85 @@
+function generateRandomId(): string {
+  const characters =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const segments = [4, 4, 4, 4]; // 4 segments of 4 characters each
+  return segments
+    .map(function (segment) {
+      let result = "";
+      for (let i = 0; i < segment; i++) {
+        result += characters.charAt(
+          Math.floor(Math.random() * characters.length)
+        );
+      }
+      return result;
+    })
+    .join("-");
+}
+
+const formatDateString = function (date: string) {
+  return new Date(date).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+};
+
+const formatTimeFromDateString = function (date: string) {
+  return new Date(date).toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
+
+const formatFullDate = function (date: string) {
+  return new Date(date).toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+};
+
+// This function was Assisted with basic coding tools
+const getRandomColorPair = (): {
+  bgColor: string;
+  textColor: string;
+} => {
+  const randomHex = (): function number { return Math.floor(Math.random() * 256); };
+  const rgbToHex = (r: number, g: number, b: number): function string { return "#" + (r.toString(16).padStart(2, "0")) + "" + (g.toString(16).padStart(2, "0")) + "" + (b
+      .toString(16)
+      .padStart(2, "0")) + ""; };
+  const r = randomHex();
+  const g = randomHex();
+  const b = randomHex();
+  const bgColor = rgbToHex(r, g, b);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  const textColor = luminance > 0.5 ? "#000000" : "#FFFFFF";
+
+  return { bgColor, textColor };
+};
+
+const uploadToCloudinary = async function (file: File) {
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append(
+      "upload_preset",
+      import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET!
+    );
+
+    const response = await fetch(
+      "https://api.cloudinary.com/v1_1/" + (
+        import.meta.env.VITE_CLOUDINARY_CLOUD_NAME
+      ) + "/image/upload",
+      {
+        method: "POST",
+        body: formData,
+      }
+    );
+
+    const data = await response.json();
+    return data.secure_url;
+  } catch (error) {
+    console.error("Image upload failed:", error);
+    return null;
+  }
+};

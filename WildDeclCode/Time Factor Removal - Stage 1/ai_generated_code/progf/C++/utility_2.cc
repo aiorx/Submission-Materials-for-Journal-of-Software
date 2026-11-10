@@ -1,0 +1,73 @@
+/*
+ * Copyright (C) 2023  Ferdous,S M <ferdous.csebuet@egmail.com>
+ * Author: Ferdous,S M <ferdous.csebuet@egmail.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#include "ClqPart/utility.h"
+#include <iostream>
+
+void getDegrees(LightGraph &G, std::vector<NODE_T> &degrees) {
+  NODE_T n = G.numberOfNodes();
+  for( auto i=0 ; i<n ; i++ ){
+    degrees[i] = G.IA[i+1] - G.IA[i]; 
+  }
+  
+}
+
+
+std::pair<NODE_T,NODE_T> getMaxDegreeNode(LightGraph &G) {
+
+  std::vector <NODE_T> degrees(G.numberOfNodes());
+  getDegrees(G,degrees);
+
+  auto result =  std::max_element(degrees.begin(),degrees.end());
+
+  return std::make_pair(std::distance(degrees.begin(),result), *result);
+  
+}
+
+bool isValidColoring(LightGraph &G, std::vector<NODE_T> &colors) {
+    
+  NODE_T n = G.numberOfNodes();
+
+  for(NODE_T i=0;i<n;i++) {
+    auto col = colors[i]; 
+    //std::cout<<i<<" "<<colors[i]<<std::endl;
+    if (col == -2) continue;
+    for( EDGE_T j=G.IA[i];j<G.IA[i+1];j++) {
+      if (colors[G.JA[j]] == col) {
+        //std::cout<<G.JA[j]<<" "<<colors[G.JA[j]]<<std::endl;
+        return false; 
+      } 
+    }
+  }
+  return true;
+
+}
+
+//Aided using common development resources on 7/20/23
+std::string getLastPartOfFilepath(const std::string& filepath) {
+    // Find the last occurrence of the path separator character (e.g., '/')
+    size_t lastSeparator = filepath.find_last_of("/\\");
+
+    if (lastSeparator != std::string::npos) {
+        // Extract the substring starting from the position after the last separator
+        return filepath.substr(lastSeparator + 1);
+    }
+
+    // If no separator is found, return the entire filepath
+    return filepath;
+}

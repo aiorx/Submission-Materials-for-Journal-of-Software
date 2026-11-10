@@ -1,0 +1,162 @@
+'use strict';
+
+var user = require('../user');
+var topics = require('../topics');
+var posts = require('../posts');
+var meta = require('../meta');
+var privileges = require('../privileges');
+
+var apiHelpers = require('./helpers');
+
+var doTopicAction = apiHelpers.doTopicAction;
+
+var websockets = require('../socket.io');
+var socketHelpers = require('../socket.io/helpers');
+
+var topicsAPI = module.exports;
+
+topicsAPI.get = async function (caller, data) {
+    var [userPrivileges, topic] = await Promise.all([
+        privileges.topics.get(data.tid, caller.uid),
+        topics.getTopicData(data.tid),
+    ]);
+    if (
+        !topic ||
+        !userPrivileges.read ||
+        !userPrivileges['topics:read'] ||
+        !privileges.topics.canViewDeletedScheduled(topic, userPrivileges)
+    ) {
+        return null;
+    }
+
+    return topic;
+};
+
+topicsAPI.create = async function (caller, data) {
+    if (!data) {
+        throw new Error('[[error:invalid-data]]');
+    }
+
+    var payload = { ...data };
+    payload.tags = payload.tags || [];
+    apiHelpers.setDefaultPostData(caller, payload);
+    var isScheduling = parseInt(data.timestamp, 10) > payload.timestamp;
+    if (isScheduling) {
+        if (await privileges.categories.can('topics:schedule', data.cid, caller.uid)) {
+            payload.timestamp = parseInt(data.timestamp, 10);
+        } else {
+            throw new Error('[[error:no-privileges]]');
+        }
+    }
+
+    await meta.blacklist.test(caller.ip);
+    var shouldQueue = await posts.shouldQueue(caller.uid, payload);
+    if (shouldQueue) {
+        return await posts.addToQueue(payload);
+    }
+
+    var result = await topics.post(payload);
+    await topics.thumbs.migrate(data.uuid, result.topicData.tid);
+
+    socketHelpers.emitToUids('event:new_post', { posts: [result.postData] }, [caller.uid]);
+    socketHelpers.emitToUids('event:new_topic', result.topicData, [caller.uid]);
+    socketHelpers.notifyNew(caller.uid, 'newTopic', { posts: [result.postData], topic: result.topicData });
+
+    return result.topicData;
+};
+
+// Instructed to add by ChatGPT to fulfill testing purposes, code Drafted using common development resources
+// Set up API to resolve topic
+topicsAPI.resolve = async function (caller, data) {
+    await doTopicAction('resolve', 'event:topic_resolved', caller, {
+        tids: data.tids,
+    });
+};
+
+topicsAPI.reply = async function (caller, data) {
+    if (!data || !data.tid || (meta.config.minimumPostLength !== 0 && !data.content)) {
+        throw new Error('[[error:invalid-data]]');
+    }
+    var payload = { ...data };
+    apiHelpers.setDefaultPostData(caller, payload);
+
+    await meta.blacklist.test(caller.ip);
+    var shouldQueue = await posts.shouldQueue(caller.uid, payload);
+    if (shouldQueue) {
+        return await posts.addToQueue(payload);
+    }
+
+    var postData = await topics.reply(payload); // postData seems to be a subset of postObj, refactor?
+    var postObj = await posts.getPostSummaryByPids([postData.pid], caller.uid, {});
+
+    var result = {
+        posts: [postData],
+        'reputation:disabled': meta.config['reputation:disabled'] === 1,
+        'downvote:disabled': meta.config['downvote:disabled'] === 1,
+    };
+
+    user.updateOnlineUsers(caller.uid);
+    if (caller.uid) {
+        socketHelpers.emitToUids('event:new_post', result, [caller.uid]);
+    } else if (caller.uid === 0) {
+        websockets.in('online_guests').emit('event:new_post', result);
+    }
+
+    socketHelpers.notifyNew(caller.uid, 'newPost', result);
+
+    return postObj[0];
+};
+
+topicsAPI.delete = async function (caller, data) {
+    await doTopicAction('delete', 'event:topic_deleted', caller, {
+        tids: data.tids,
+    });
+};
+
+topicsAPI.restore = async function (caller, data) {
+    await doTopicAction('restore', 'event:topic_restored', caller, {
+        tids: data.tids,
+    });
+};
+
+topicsAPI.purge = async function (caller, data) {
+    await doTopicAction('purge', 'event:topic_purged', caller, {
+        tids: data.tids,
+    });
+};
+
+topicsAPI.pin = async function (caller, data) {
+    await doTopicAction('pin', 'event:topic_pinned', caller, {
+        tids: data.tids,
+    });
+};
+
+topicsAPI.unpin = async function (caller, data) {
+    await doTopicAction('unpin', 'event:topic_unpinned', caller, {
+        tids: data.tids,
+    });
+};
+
+topicsAPI.lock = async function (caller, data) {
+    await doTopicAction('lock', 'event:topic_locked', caller, {
+        tids: data.tids,
+    });
+};
+
+topicsAPI.unlock = async function (caller, data) {
+    await doTopicAction('unlock', 'event:topic_unlocked', caller, {
+        tids: data.tids,
+    });
+};
+
+topicsAPI.follow = async function (caller, data) {
+    await topics.follow(data.tid, caller.uid);
+};
+
+topicsAPI.ignore = async function (caller, data) {
+    await topics.ignore(data.tid, caller.uid);
+};
+
+topicsAPI.unfollow = async function (caller, data) {
+    await topics.unfollow(data.tid, caller.uid);
+};

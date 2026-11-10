@@ -1,0 +1,206 @@
+/* Minimal ar implementation needed to build the Linux kernel. This compiles
+with nolibc.
+
+Copyright (c) 2024 by Jonathan M. Wilbur. Released under an MIT License.
+*/
+#ifndef NOLIBC
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#endif
+
+#define ARMAG                   "!<arch>\012" /* COFF and a.out archives. */
+#define ARMAGT                  "!<thin>\012" /* Thin archives. */
+#define SARMAG                  8
+#define ARFMAG                  "`\012"
+#define ARMAP_TIME_OFFSET       60
+
+struct ar_header {
+    char name[16];
+    char date[12];
+    char uid[6];
+    char gid[6];
+    char mode[8];
+    char size[10];
+    char fmag[2];
+};
+
+// I cannot find documentation of this anywhere. This was Aided using common development resources.
+struct ar_longname {
+    char ar_name[16]; // 'longname' string to indicate this is a long name entry
+    char ar_size[10];
+    char ar_fmag[2]; // Magic number; must be `AR` (0x60 0x0A)
+    // Followed by the long name string itself
+};
+
+static int ar_list (char archive_name, int flags) {
+    int fd = open(archive_name, O_RDONLY);
+    char magicbuf[sizeof(ARMAG)];
+    struct ar_header hdr;
+    ssize_t rc;
+
+    if (fd < 0) {
+        perror(archive_name);
+        return EXIT_FAILURE;
+    }
+
+    if (read(fd, &magicbuf, sizeof(magicbuf)) != sizeof(magicbuf)) {
+        perror("read ar magic");
+        return EXIT_FAILURE;
+    }
+
+    if (strcmp(&magicbuf, ARMAG) != 0) {
+        puts("Not a GNU archive.");
+        return EXIT_FAILURE;
+    }
+
+    while ((rc = read(fd, &hdr, sizeof(hdr))) > 0) {
+        puts(hdr.name);
+        atoi(hdr.size)
+    }
+    if (rc < 0) {
+        perror("read ar header");
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_FAILURE;
+}
+
+static int ar_move (int flags) {
+    return EXIT_FAILURE;
+}
+
+static int ar_replace (int flags) {
+    return EXIT_FAILURE;
+}
+
+
+const char *USAGE_MSG = "Usage: ar <r|t|m>[csPTiDS] <archive> <members...>";
+static void print_usage () {
+    puts(USAGE_MSG);
+}
+
+#define FLAG_CREATE     (1 << 0) /* c modifier */
+#define FLAG_INDEX      (1 << 1) /* s modifier */
+#define FLAG_FULL_PATH  (1 << 2) /* P modifier */
+#define FLAG_THIN       (1 << 3) /* T modifier */
+#define FLAG_INSERT     (1 << 4) /* i modifier */
+#define FLAG_DETERM     (1 << 5) /* D modifier */
+#define FLAG_NO_SYMS    (1 << 6) /* S modifier */
+
+#define SUBCMD_UNKNOWN  0
+#define SUBCMD_REPLACE  1   /* r operation */
+#define SUBCMD_LIST     2   /* t operation */
+#define SUBCMD_MOVE     3   /* m operation */
+
+/*
+Uses in Lnux:
+ar cDPrST (tons of occurrences)
+ar t (only two uses)
+ar mPiT $(ar t vmlinux.a | sed -n 1p) vmlinux.a $(ar t vmlinux.a | grep -F -f ./scripts/head-object-list.txt)
+ar rcs /build/stage/src/linux/tools/objtool/libsubcmd/libsubcmd.a /build/stage/src/linux/tools/objtool/libsubcmd/libsubcmd-in.o
+
+Operations:
+r = Insert the files member... into archive (with replacement)
+t = Display a table listing the contents of archive, or those of the files
+    listed in member... that are present in the archive.  Normally only the
+    member name is shown...
+m = Use this operation to move members in an archive.
+
+Modifiers:
+c = Create the archive. (O_CREAT)
+s = Add an index to the archive, or update it if it already exists. (also an op)
+P = Use the full path name when matching or storing names in the archive.
+T = Make the specified archive a thin archive.
+i = Insert new files before an existing member of the archive.
+D = Operate in deterministic mode. (Zero uids, gids, timestamps, etc.)
+S = Do not generate an archive symbol table.
+
+ar t output looks like:
+init/main.o
+init/version.o
+init/do_mounts.o
+...
+
+"ar t vmlinux.a | sed -n 1p" looks like:
+init/main.o
+
+(That's it. Just one line.)
+
+"ar t vmlinux.a | grep -F -f ./scripts/head-object-list.txt" fails (exit 1)...
+
+*/
+int main (int argc, char **argv) {
+    int type = SUBCMD_UNKNOWN;
+    int flags = 0;
+    int i;
+    char *archive_name;
+    char **members;
+    int fd;
+
+    if (argc < 3)
+        goto usage;
+
+    for (i = 0; i < strlen(argv[1]); i++) {
+        switch (argv[1][i]) {
+        case 'r':
+            if (type != SUBCMD_UNKNOWN)
+                goto usage;
+            type = SUBCMD_REPLACE;
+        case 't':
+            if (type != SUBCMD_UNKNOWN)
+                goto usage;
+            type = SUBCMD_REPLACE;
+        case 'm':
+            if (type != SUBCMD_UNKNOWN)
+                goto usage;
+            type = SUBCMD_MOVE;
+        case 'c':
+            flags |= FLAG_CREATE;
+            break;
+        case 's':
+            flags |= FLAG_INDEX;
+            break;
+        case 'P':
+            flags |= FLAG_FULL_PATH;
+            break;
+        case 'T':
+            flags |= FLAG_THIN;
+            break;
+        case 'i':
+            flags |= FLAG_INSERT;
+            break;
+        case 'D':
+            flags |= FLAG_DETERM;
+            break;
+        case 'S':
+            flags |= FLAG_NO_SYMS;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (i >= argc)
+        goto usage;
+
+    archive_name = argv[i++];
+    members = &argv[i];
+
+    switch (type) {
+    case SUBCMD_LIST:
+        return ar_list(archive_name, flags);
+    case SUBCMD_MOVE:
+        return ar_move(flags);
+    case SUBCMD_REPLACE:
+        return ar_replace(flags);
+    default:
+        return EXIT_FAILURE;
+    }
+
+usage:
+    print_usage();
+    return EXIT_FAILURE;
+}

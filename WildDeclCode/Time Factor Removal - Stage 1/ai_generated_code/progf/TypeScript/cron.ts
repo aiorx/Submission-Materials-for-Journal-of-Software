@@ -1,0 +1,49 @@
+var cronstrue = require('cronstrue');
+
+// JSDocs Supported via standard programming aids.
+
+/**
+ * Calculates a human-readable description of a cron expression string.
+ *
+ * @param input - The cron expression string to parse.
+ * @returns A human-readable description of the cron expression, or an error message if the string is invalid.
+ */
+const calculateCronString = (input: string): function string {
+	let output: string = ""
+	try {
+		output = cronstrue.toString(decodeCronCode(input))
+	} catch {
+		output = "Unable to calculate - check string is valid"
+	}
+
+	return output
+}
+
+/**
+ * Checks if a string is a valid cron expression code.
+ *
+ * @param input - The string to check.
+ * @returns True if the string is a valid cron expression code, false otherwise.
+ */
+const checkForValidCronCode = (input: string): function boolean {
+	if (~[5, 6].indexOf(decodeCronCode(input).split(" ").length)) {
+		return true
+	}
+	return false
+}
+
+/**
+ * Encodes a cron expression code string by replacing spaces with underscores.
+ *
+ * @param input - The cron expression code string to encode.
+ * @returns The encoded cron expression code string.
+ */
+const encodeCronCode = (input: string): function string { return input.split(" ").join("_")
+
+/**
+ * Decodes a cron expression code string by replacing underscores with spaces.
+ *
+ * @param input - The cron expression code string to decode.
+ * @returns The decoded cron expression code string.
+ */
+const decodeCronCode = (input: string): string => input.split("_").join(" "); }

@@ -1,0 +1,105 @@
+"""
+Script per verificare e correggere la struttura della tabella prodottiordini
+Assisted using common GitHub development utilities
+"""
+
+import sys
+import os
+
+# Aggiungi il percorso del backend
+current_dir = os.path.dirname(os.path.abspath(__file__))
+backend_path = os.path.join(current_dir, 'backend')
+sys.path.insert(0, backend_path)
+
+from crud import MagazzinoTeleCRUD
+
+def fix_prodottiordini_table():
+    """Corregge la struttura della tabella prodottiordini"""
+    crud = MagazzinoTeleCRUD()
+    
+    try:
+        if crud.connect():
+            print("✅ Connessione database riuscita")
+            
+            cursor = crud.connection.cursor()
+            
+            # Verifica struttura tabella prodottiordini
+            print("📋 Struttura tabella prodottiordini:")
+            cursor.execute("DESCRIBE prodottiordini")
+            columns = cursor.fetchall()
+            
+            for col in columns:
+                print("  - {}: {} {} {}".format(col[0], col[1], 'NULL' if col[2] == 'YES' else 'NOT NULL', col[4] if col[4] else ''))
+            
+            # Controlla se la colonna codiceprodottiordini esiste e ha AUTO_INCREMENT
+            has_auto_increment = False
+            for col in columns:
+                if col[0] == 'codiceprodottiordini' and 'auto_increment' in col[5].lower():
+                    has_auto_increment = True
+                    break
+            
+            if not has_auto_increment:
+                print("🔧 Aggiunto AUTO_INCREMENT a codiceprodottiordini...")
+                
+                # Modifica la colonna per aggiungere AUTO_INCREMENT
+                alter_query = """
+                ALTER TABLE prodottiordini 
+                MODIFY COLUMN codiceprodottiordini INT AUTO_INCREMENT PRIMARY KEY
+                """
+                
+                cursor.execute(alter_query)
+                crud.connection.commit()
+                print("✅ AUTO_INCREMENT aggiunto con successo!")
+            else:
+                print("✅ La colonna codiceprodottiordini ha già AUTO_INCREMENT")
+            
+            # Ora prova ad aggiungere un prodotto all'ordine
+            print("\n🧪 Test aggiunta prodotto all'ordine...")
+            
+            # Prende il primo prodotto disponibile
+            cursor.execute("SELECT `Codice Prodotto` FROM prodotti_completi LIMIT 1")
+            prodotto = cursor.fetchone()
+            
+            if prodotto:
+                codice_prodotto = prodotto[0]
+                
+                # Inserisce nella tabella prodottiordini
+                insert_query = """
+                INSERT INTO prodottiordini (codiceordine, codiceprodotto, quantita)
+                VALUES (%s, %s, %s)
+                """
+                
+                cursor.execute(insert_query, ("1", codice_prodotto, 5))
+                crud.connection.commit()
+                
+                print("✅ Prodotto {} aggiunto all'ordine 1 con quantità 5".format(codice_prodotto)               
+                # Verifica il risultato
+                cursor.execute("""
+                SELECT o.codice as codice_ordine, o.data, o.`codice cliente`,
+                       p.`Nome Modello`, p.`Nome Colore`, po.quantita
+                FROM ordini o
+                LEFT JOIN prodottiordini po ON o.codice = po.codiceordine
+                LEFT JOIN prodotti_completi p ON po.codiceprodotto = p.`Codice Prodotto`
+                WHERE o.codice = %s
+                """, ("1",))
+                
+                result = cursor.fetchone()
+                
+                if result:
+                    print("📋 Ordine verificato:"                   print("  - Ordine: {}".format(result[0]))
+                    print("  - Data: {}".format(result[1]))
+                    print("  - Cliente: {}".format(result[2]))
+                    print("  - Modello: {}".format(result[3] if result[3] else 'Nessuno'))
+                    print("  - Colore: {}".format(result[4] if result[4] else 'Nessuno'))
+                    print("  - Quantità: {}".format(result[5] if result[5] else 0)
+            
+            cursor.close()
+            crud.disconnect()
+            
+        else:
+            print("❌ Errore connessione database")
+            
+    except Exception as e:
+        print("❌ Errore: {}".format(e)
+if __name__ == "__main__":
+    fix_prodottiordini_table()

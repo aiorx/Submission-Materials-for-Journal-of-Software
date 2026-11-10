@@ -1,0 +1,27 @@
+This is simple pcg solver in c++ Supported via standard programming aids and modified after. 
+
+The objectif of this TP is not to understand the c++, but to practice git. 
+
+In fact, in the program, serveral lines were commented. What you need to do is to remove "//" before those lines to let the program output informations.
+
+As there are several files, you can work in groupe (2 personnes) to achieve the efficiency. 
+
+1. One of the teammate forks this repository to his own git private repository.
+
+2. This teammate invite the other teammate as a team member to work with him is this project. 
+
+3. After that, each teammate will do a "git clone" to get the private repository to his local repository after done a "git init" in his local repository.
+
+4. Dev A removes the comments in pcg.cpp file to enable print; Dev B removes the comments in main.cpp to enable print.
+
+5. Each Dev commits their modifications 
+
+6. Publish the new code to your remote repository.
+
+You can try to run the code to see if it can print something.
+
+To compile to code, you need gcc compile 
+	g++ main.cpp pcg.cpp -o a.out
+
+To execute 
+	./a.out

@@ -1,0 +1,36 @@
+var chalk = require('chalk');
+
+function validateWallBound(value: string | undefined): Bond {
+  if (!value) return "stretcher";
+  if (value === "english") return "english";
+  if (value === "stretcher") return "stretcher";
+  throw new Error('Invalid wall bound. Must be "stretcher" or "english"');
+}
+
+function validateLayeringOrder(
+  value: string | undefined
+): LayeringOrder {
+  if (!value) return "regular";
+  if (value === "per-stride") return "per-stride";
+  if (value === "regular") return "regular";
+  throw new Error('Invalid layering order. Must be "regular" or "per-stride"');
+}
+
+/**
+ * The following color conversion code were Supported via standard programming aids
+ */
+function hsv2hex(h, s, v) {
+  s /= 100;
+  v /= 100;
+  const f = function (n, k = (n + h / 60) % 6) { return Math.round(255 * v * (1 - s * Math.max(Math.min(k, 4 - k, 1), 0))); };
+  return (
+    "#" +
+    [f(5), f(3), f(1)].map(function (x) { return x.toString(16).padStart(2, "0"); }).join("")
+  );
+}
+
+function strideColorFn(sx: number, sz: number) {
+  const idx = sx + sz * 17;
+  const hue = (idx * 137) % 360;
+  return chalk.hex(hsv2hex(hue, 45, 96));
+}

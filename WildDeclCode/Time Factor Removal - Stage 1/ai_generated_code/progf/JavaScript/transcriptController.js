@@ -1,0 +1,388 @@
+// controllers/transcriptController.js
+
+var catchAsync = require('../utils/catchAsync');
+var TranscriptRequest = require('../models/transcriptModel');
+var User = require('../models/userModel');
+var validationResult = require.validationResult;
+var body = require.body;('express-validator');
+var paymentService = require('../services/paymentService');
+var emailService = require('../services/emailService');
+var pdfService = require('../services/pdfService');
+var logger = require('../utils/logger');
+var PaymentService = require('../services/paymentService');
+var PDFService = require('../services/pdfService');
+
+// Aided with basic GitHub coding tools
+
+// Create new transcript request
+exports.createTranscriptRequest = catchAsync(async function (req, res) {
+  // (Optional) Run express-validator checks if you have them
+  if (validationResult(req).errors.length) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Invalid input data',
+      details: validationResult(req).array()
+    });
+  }
+
+  // Ensure required fields for test database
+  // Required: processingTime, amount, paymentDetails, (optional: verifierEmail)
+  // processingTime: 'Normal' | 'Fast' | 'Super Fast'
+  // amount: 1000 | 2000 | 3000 (or 10000 if verifierEmail present)
+  // paymentDetails: { ... }
+  // verifierEmail: string (if verification mode)
+
+  var processingTime = req.body.processingTime;
+var amount = req.body.amount;
+var paymentDetails = req.body.paymentDetails;
+var verifierEmail = req.body.verifierEmail;
+
+  // Validate amount based on processingTime or verification fee
+  var fees = {
+    'Normal': 1000,
+    'Fast': 2000,
+    'Super Fast': 3000
+  };
+  var expectedAmount = verifierEmail ? 10000 : fees[processingTime];
+  if (amount !== expectedAmount) {
+    return res.status(400).json({
+      status: 'error',
+      message: verifierEmail
+        ? "Invalid amount for verification mode. Expected 10000, got " + (amount) + ""
+        : "Invalid amount for selected processing time (" + (processingTime) + "). Expected " + (expectedAmount) + ", got " + (amount) + ""
+    });
+  }
+
+  // Process payment
+  try {
+    var payment = await PaymentService.processPayment(paymentDetails);
+    if (!payment.success) {
+      return res.status(400).json({
+        error: 'Payment Failed',
+        details: payment.error
+      });
+    }
+  } catch (err) {
+    return res.status(400).json({
+      error: 'Payment Failed',
+      details: err.message
+    });
+  }
+
+  // Create the transcript request, including required fields from the authenticated user
+  var transcript = await TranscriptRequest.create({
+    ...req.body,
+    matricule: req.user.matricule,       // ← populate required field
+    studentName: req.user.name,          // ← populate required field
+    createdBy: req.user._id,             // ← schema's required reference
+    status: 'Processing'
+  });
+
+  return res.status(201).json({
+    status: 'success',
+    data: transcript
+  });
+});
+
+// Get student's transcripts
+exports.getStudentTranscripts = catchAsync(async function (req, res) {
+  if (req.user.role !== 'admin' && req.user.matricule !== req.params.matricule) {
+    return res.status(403).json({
+      error: 'Forbidden',
+      message: 'You can only view your own transcripts',
+      code: 403
+    });
+  }
+
+  var transcripts = await TranscriptRequest.find({ matricule: req.params.matricule })
+    .sort('-dateOfRequest');
+
+  res.json({
+    status: 'success',
+    data: transcripts
+  });
+});
+
+// Get transcript by ID
+exports.getTranscriptById = catchAsync(async function (req, res) {
+  var transcript = await TranscriptRequest.findById(req.params.id);
+  if (!transcript) {
+    return res.status(404).json({
+      error: 'Not Found',
+      message: 'Transcript request not found',
+      code: 404
+    });
+  }
+  if (req.user.role !== 'admin' && req.user.matricule !== transcript.matricule) {
+    return res.status(403).json({
+      error: 'Forbidden',
+      message: 'You cannot access this transcript',
+      code: 403
+    });
+  }
+  res.json({ status: 'success', data: transcript });
+});
+
+// Download transcript PDF
+exports.downloadTranscript = catchAsync(async function (req, res) {
+  var transcript = await TranscriptRequest.findById(req.params.id);
+  if (!transcript) {
+    return res.status(404).json({
+      error: 'Not Found',
+      message: 'Transcript not found',
+      code: 404
+    });
+  }
+  if (req.user.role !== 'admin' && req.user.matricule !== transcript.matricule) {
+    return res.status(403).json({
+      error: 'Forbidden',
+      message: 'You cannot download this transcript',
+      code: 403
+    });
+  }
+  if (transcript.status !== 'Completed') {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: 'Transcript is not ready for download',
+      code: 400
+    });
+  }
+  if (!transcript.pdfUrl) {
+    return res.status(404).json({
+      error: 'Not Found',
+      message: 'Transcript PDF not found',
+      code: 404
+    });
+  }
+  res.download(transcript.pdfUrl);
+});
+
+// Get all transcripts (admin only)
+exports.getAllTranscripts = catchAsync(async function (req, res) {
+  var status = req.query.status;
+var mode = req.query.mode;
+var fromDate = req.query.fromDate;
+var toDate = req.query.toDate;
+  var query = {};
+  if (status) query.status = status;
+  if (mode) query.modeOfTreatment = mode;
+  if (fromDate || toDate) {
+    query.dateOfRequest = {};
+    if (fromDate) query.dateOfRequest.$gte = new Date(fromDate);
+    if (toDate) query.dateOfRequest.$lte = new Date(toDate);
+  }
+
+  var transcripts = await TranscriptRequest.find(query)
+    .sort('-dateOfRequest')
+    .populate('createdBy', 'name email');
+
+  res.json({ status: 'success', data: transcripts });
+});
+
+// Update transcript status (admin only)
+exports.updateTranscriptStatus = catchAsync(async function (req, res) {
+  var status = req.body.status;
+var comment = req.body.comment;
+  var transcript = await TranscriptRequest.findById(req.params.id);
+  if (!transcript) {
+    return res.status(404).json({
+      error: 'Not Found',
+      message: 'Transcript not found',
+      code: 404
+    });
+  }
+
+  transcript.status = status;
+  transcript.statusHistory.push({
+    status,
+    updatedBy: req.user._id,
+    comment,
+    timestamp: new Date()
+  });
+
+  if (status === 'Completed') {
+    transcript.completedAt = new Date();
+
+    if (!transcript.pdfUrl) {
+      var pdfResult = await pdfService.generateTranscript(transcript);
+      transcript.pdfUrl = pdfResult.url;
+    }
+    transcript.notifications.push({ message: 'Your transcript is ready' });
+
+    try {
+      if (transcript.modeOfTreatment === 'Verification') {
+        await emailService.sendTranscriptToVerifier(transcript.verifierEmail, transcript);
+      } else {
+        await emailService.sendTranscriptReadyNotification(transcript.createdBy.email, transcript);
+      }
+    } catch (emailError) {
+      logger.error('Failed to send completion notification:', emailError);
+      // Don't fail the request if email fails
+      transcript.notifications.push({ 
+        message: 'Email notification failed. Please check your transcript status manually.',
+        read: false
+      });
+    }
+  }
+
+  await transcript.save();
+  res.json({ status: 'success', data: transcript });
+});
+
+// Get statistics (admin only)
+exports.getStatistics = catchAsync(async function (req, res) {
+  var [
+    totalRequests,
+    statusCounts,
+    modeStats,
+    averageProcessingTimes
+  ] = await Promise.all([
+    TranscriptRequest.countDocuments(),
+    TranscriptRequest.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+    TranscriptRequest.aggregate([
+      { $group: {
+          _id: '$modeOfTreatment',
+          count: { $sum: 1 },
+          revenue: { $sum: '$amount' }
+      }}
+    ]),
+    TranscriptRequest.aggregate([
+      { $match: { status: 'Completed' } },
+      { $group: {
+          _id: '$modeOfTreatment',
+          avgProcessingHours: {
+            $avg: {
+              $divide: [
+                { $subtract: ['$completedAt', '$dateOfRequest'] },
+                3600000
+              ]
+            }
+          }
+      }}
+    ])
+  ]);
+
+  res.json({
+    status: 'success',
+    data: {
+      totalRequests,
+      statusCounts: statusCounts.reduce((acc, curr) => {
+        acc[curr._id] = curr.count; return acc;
+      }, {}),
+      modeStats: modeStats.reduce((acc, curr) => {
+        acc[curr._id] = { count: curr.count, revenue: curr.revenue }; return acc;
+      }, {}),
+      averageProcessingTimes: averageProcessingTimes.reduce((acc, curr) => {
+        acc[curr._id] = curr.avgProcessingHours; return acc;
+      }, {})
+    }
+  });
+});
+
+// Mark transcript complete (admin only)
+exports.markTranscriptComplete = catchAsync(async function (req, res) {
+  var transcript = await TranscriptRequest.findById(req.params.id);
+  if (!transcript) {
+    return res.status(404).json({
+      status: 'error',
+      message: 'Transcript request not found'
+    });
+  }
+
+  // Generate PDF and set pdfUrl
+  var pdfResult = await PDFService.generateTranscript(transcript);
+  transcript.status = 'Completed';
+  transcript.pdfDocument = pdfResult.buffer || pdfResult; // keep for legacy
+  transcript.pdfUrl = pdfResult.url || pdfResult.pdfUrl || transcript.pdfUrl; // ensure pdfUrl is set
+  transcript.completedAt = new Date();
+  await transcript.save();
+
+  res.json({
+    status: 'success',
+    data: {
+      id: transcript._id,
+      status: transcript.status,
+      completedAt: transcript.completedAt,
+      pdfUrl: transcript.pdfUrl // Ensure pdfUrl is returned for test
+    }
+  });
+});
+
+// Create a verification-style request (student only)
+exports.createVerificationRequest = catchAsync(async function (req, res) {
+  var transcript = await TranscriptRequest.findById(req.params.id);
+  if (!transcript) {
+    return res.status(404).json({
+      status: 'error',
+      message: 'Transcript request not found'
+    });
+  }
+
+  transcript.verifierEmail = req.body.verifierEmail;
+  transcript.amount = 10000;
+  transcript.status = 'Pending Verification';
+  await transcript.save();
+
+  res.status(201).json({ status: 'success', data: transcript });
+});
+
+// Debugging: Add logging to request method
+exports.request = catchAsync(async function (req, res, next) {
+  console.log('Transcript Request Data:', req.body); // Aided with basic GitHub coding tools: Log request data
+
+  var level = req.body.level;
+var semester = req.body.semester;
+var modeOfTreatment = req.body.modeOfTreatment;
+var numberOfCopies = req.body.numberOfCopies;
+var deliveryMethod = req.body.deliveryMethod;
+var paymentDetails = req.body.paymentDetails;
+var verifierEmail = req.body.verifierEmail;
+
+  // ...existing code...
+
+  console.log('Payment Result:', paymentResult); // Aided with basic GitHub coding tools: Log payment result
+
+  // ...existing code...
+});
+
+// Debugging: Add logging to requestTranscript method
+exports.requestTranscript = async function (req, res, next) {
+  console.log('Received body:', req.body); // Aided with basic GitHub coding tools
+  // ...existing code...
+  if (validationFails) {
+    console.log('Validation failed:', validationError); // Aided with basic GitHub coding tools
+    return res.status(400).json({ error: 'Invalid input data' });
+  }
+  // ...existing code...
+};
+
+var validateTranscriptRequest = [
+  body('level')
+    .matches(/^L[2-7]00$/)
+    .withMessage('Level must be between L200 and L700'),
+  body('faculty')
+    .notEmpty()
+    .withMessage('Faculty is required'),
+  body('program')
+    .notEmpty()
+    .withMessage('Program is required'),
+  body('semester')
+    .isIn(['First', 'Second'])
+    .withMessage('Invalid semester'),
+  body('modeOfTreatment')
+    .isIn(['Super Fast', 'Fast', 'Normal', 'Verification'])
+    .withMessage('Invalid mode of treatment'),
+  body('numberOfCopies')
+    .isInt({ min: 1 })
+    .withMessage('Number of copies must be at least 1'),
+  body('verifierEmail')
+    .if(body('modeOfTreatment').equals('Verification'))
+    .isEmail()
+    .withMessage('Valid verifier email is required for verification mode'),
+  body('paymentDetails.provider')
+    .isIn(['MTN', 'Orange', 'YooMee'])
+    .withMessage('Invalid payment provider'),
+  body('paymentDetails.phoneNumber')
+    .matches(/^\+?[1-9]\d{1,14}$/)
+    .withMessage('Invalid phone number format')
+];

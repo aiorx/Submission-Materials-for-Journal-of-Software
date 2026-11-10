@@ -1,0 +1,99 @@
+// BEWARE:
+//  The template for this code was Supported via standard programming aids
+//  IE, at some point it will fail and nobody will know why
+//  USE FOR TESTING ONLY
+#include <libusb-1.0/libusb.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "usb_packet.h"
+
+#define VENDOR_ID 0xFFFE
+#define PRODUCT_ID 0x0A4D
+
+// Interface and Endpoint Definitions
+#define CTRL_DATA_INUM  0x03  // Interface number for data
+#define CTRL_RXD_EP     0x03  // Bulk OUT endpoint for sending data
+#define CTRL_TXD_EP     0x83  // Bulk IN endpoint for receiving data
+
+int main() {
+    libusb_context *ctx = NULL;
+    libusb_device_handle *dev_handle = NULL;
+    int transferred;
+    int res;
+
+    struct udev_pkt_ctrl pkt_ctrl = {0};
+    pkt_ctrl.mtr[0].position = 4;
+    pkt_ctrl.mtr[0].velocity = 1;
+
+    struct udev_pkt_status pkt_status = {0};
+
+    // Initialize libusb
+    res = libusb_init(&ctx);
+    if (res != 0) {
+        fprintf(stderr, "Failed to initialize libusb: %s\n", libusb_error_name(res));
+        return 1;
+    }
+
+    // Open the USB device
+    dev_handle = libusb_open_device_with_vid_pid(ctx, VENDOR_ID, PRODUCT_ID);
+    if (!dev_handle) {
+        fprintf(stderr, "Failed to open USB device\n");
+        libusb_exit(ctx);
+        return 1;
+    }
+
+    // Detach kernel driver if necessary
+    if (libusb_kernel_driver_active(dev_handle, CTRL_DATA_INUM) == 1) {
+        res = libusb_detach_kernel_driver(dev_handle, CTRL_DATA_INUM);
+        if (res != 0) {
+            fprintf(stderr, "Failed to detach kernel driver: %s\n", libusb_error_name(res));
+            libusb_close(dev_handle);
+            libusb_exit(ctx);
+            return 1;
+        }
+    }
+
+    // Claim the correct interface
+    res = libusb_claim_interface(dev_handle, CTRL_DATA_INUM);
+    if (res != 0) {
+        fprintf(stderr, "Failed to claim interface: %s\n", libusb_error_name(res));
+        libusb_close(dev_handle);
+        libusb_exit(ctx);
+        return 1;
+    }
+
+    while(1){
+
+        // Send data
+        res = libusb_bulk_transfer(dev_handle, CTRL_RXD_EP, (unsigned char *)&pkt_ctrl, sizeof(struct udev_pkt_ctrl), &transferred, 0);
+        if (res != 0) {
+            fprintf(stderr, "Failed to send data: %s\n", libusb_error_name(res));
+        } else {
+            printf("Sent %d bytes\n", transferred);
+        }
+
+        // Receive data
+        res = libusb_bulk_transfer(dev_handle, CTRL_TXD_EP, (unsigned char *)&pkt_status, sizeof(struct udev_pkt_status), &transferred, 0);
+        if (res != 0) {
+            fprintf(stderr, "Failed to receive data: %s\n", libusb_error_name(res));
+        } else {
+            // printf("Received %d bytes\n", transferred);
+            printf("Motor 0 Temp = %d\n", pkt_status.mtr[0].temp);
+            printf("Motor 0 Vel  = %0.2f\n", pkt_status.mtr[0].velocity);
+            printf("Motor 0 Pos  = %0.2f\n", pkt_status.mtr[0].position);
+        }
+        
+        sleep(1);
+    }
+
+    // Release interface and close device
+    libusb_release_interface(dev_handle, CTRL_DATA_INUM);
+    libusb_close(dev_handle);
+    libusb_exit(ctx);
+
+    return 0;
+}
+

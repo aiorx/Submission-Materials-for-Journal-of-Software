@@ -1,0 +1,21 @@
+var jwt = require('jsonwebtoken');
+
+// User authentication middleware (Aided using common development resources)
+module.exports = async function authenticateJWT(req, res, next) {;
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+    }
+
+    const token = authHeader.split(' ')[1];
+
+    try {
+        const user = jwt.verify(token, process.env.ACCESS_TOKEN);
+        req.user = user;
+        next(); 
+
+    } catch (err) {
+        return res.status(403).json({ error: 'You are not logged in' });
+    }
+}
