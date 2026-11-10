@@ -218,8 +218,8 @@ def main():
     visualizer.generate_all_visualizations(results, trainer.model, X, labels, feature_names)
 
     logger.info("=" * 60)
-    logger.info("实验完成！请查看 results_cpp/figures 目录下的可视化结果")
-    logger.info("详细报告请查看: results_cpp/reports/experiment_report.txt")
+    logger.info("实验完成！请查看 results_c/figures 目录下的可视化结果")
+    logger.info("详细报告请查看: results_c/experiment_report.txt")
 
 
 if __name__ == "__main__":
