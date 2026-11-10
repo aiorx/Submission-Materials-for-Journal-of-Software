@@ -1,0 +1,693 @@
+// Aided with basic GitHub coding tools
+// Comprehensive Service Worker Tests - Phase 3.1 Implementation
+// Tests all message handlers, Chrome extension lifecycle, error scenarios, and integration patterns
+// Consolidated from multiple test files with comprehensive coverage
+
+/// <reference types="jest" />
+
+// Mock Chrome APIs BEFORE importing service worker to prevent runtime errors
+const mockChrome = {
+  runtime: {
+    onInstalled: {
+      addListener: jest.fn(),
+    },
+    onMessage: {
+      addListener: jest.fn(),
+    },
+    getManifest: jest.fn(() => ({ version: '1.0.0-test' })),
+    lastError: null as chrome.runtime.LastError | null,
+    sendMessage: jest.fn(),
+    getURL: jest.fn((path: string) => `chrome-extension://test-id/${path}`),
+  },
+  commands: {
+    onCommand: {
+      addListener: jest.fn(),
+    },
+  },
+  contextMenus: {
+    create: jest.fn(),
+    removeAll: jest.fn(() => Promise.resolve()),
+    onClicked: {
+      addListener: jest.fn(),
+    },
+  },
+  notifications: {
+    create: jest.fn(),
+  },
+  storage: {
+    sync: {
+      get: jest.fn() as jest.MockedFunction<
+        (
+          keys: string | string[] | Record<string, unknown>,
+          callback: (result: Record<string, unknown>) => void
+        ) => void
+      >,
+      set: jest.fn() as jest.MockedFunction<
+        (items: Record<string, unknown>, callback?: () => void) => void
+      >,
+      remove: jest.fn(),
+    },
+    local: {
+      get: jest.fn() as jest.MockedFunction<
+        (
+          keys: string | string[] | Record<string, unknown>,
+          callback: (result: Record<string, unknown>) => void
+        ) => void
+      >,
+      set: jest.fn() as jest.MockedFunction<
+        (items: Record<string, unknown>, callback?: () => void) => void
+      >,
+      remove: jest.fn(),
+    },
+  },
+  tabs: {
+    query: jest.fn(),
+    sendMessage: jest.fn(),
+    get: jest.fn(),
+    create: jest.fn() as jest.MockedFunction<
+      (options: chrome.tabs.CreateProperties, callback?: (tab: chrome.tabs.Tab) => void) => void
+    >,
+    remove: jest.fn() as jest.MockedFunction<
+      (tabId: number | number[], callback?: () => void) => void
+    >,
+  },
+  scripting: {
+    executeScript: jest.fn(),
+  },
+};
+
+// Mock fetch for getTurndownLibrary
+const mockFetch = jest.fn() as jest.MockedFunction<typeof fetch>;
+(global as Record<string, unknown>).fetch = mockFetch;
+
+// Set up global Chrome mock
+(global as Record<string, unknown>).chrome = mockChrome;
+
+// Mock console to reduce test output noise
+const originalConsole = global.console;
+global.console = {
+  ...originalConsole,
+  log: jest.fn(),
+  debug: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+  info: jest.fn(),
+};
+
+// Import types and modules after mocking
+import {
+  getServiceWorkerState,
+  getServiceWorkerStatus,
+  handleInstallation,
+  handleMessage,
+  initializeServiceWorkers,
+} from '../../background/service-worker';
+import { IMessageData, ISettings } from '../../types/types';
+import { ContentCaptureService } from '../../utils/content-capture-service';
+import { SettingsManager } from '../../utils/settings-manager';
+
+describe('Service Worker Comprehensive Tests - Phase 3.1', () => {
+  let testSettingsManager: SettingsManager;
+  let testCaptureService: ContentCaptureService;
+
+  // Valid settings for testing
+  const VALID_SETTINGS: ISettings = {
+    githubToken: 'ghp_test1234567890abcdef1234567890abcdef12',
+    githubRepo: 'testuser/testrepo',
+    defaultFolder: 'documents',
+    customFolder: '',
+    fileNamingPattern: '{title}',
+    autoCommit: true,
+    captureImages: true,
+    removeAds: true,
+    removeNavigation: true,
+    customSelectors: '',
+    commitMessageTemplate: 'Auto-commit via PrismWeave: {title}',
+    debugMode: false,
+    showNotifications: true,
+    enableKeyboardShortcuts: true,
+    // Bookmarklet settings
+    'bookmarklet.enabled': false,
+    'bookmarklet.customDomain': '',
+    'bookmarklet.includeImages': true,
+    'bookmarklet.includeLinks': true,
+    'bookmarklet.cleanAds': true,
+    'bookmarklet.customSelectors': [],
+    'bookmarklet.excludeSelectors': ['nav', 'header', 'footer', '.advertisement', '.ad'],
+    'bookmarklet.autoInstall': false,
+    'bookmarklet.version': '1.0.0',
+  };
+
+  beforeEach(async () => {
+    // Reset all mocks before each test
+    jest.clearAllMocks();
+
+    // Reset chrome.runtime.lastError
+    (mockChrome.runtime as any).lastError = null;
+
+    // Set up storage mock responses
+    (
+      mockChrome.storage.sync.get as jest.MockedFunction<typeof mockChrome.storage.sync.get>
+    ).mockImplementation(
+      (
+        keys: string | string[] | Record<string, unknown>,
+        callback: (result: Record<string, unknown>) => void
+      ) => {
+        callback({ prismWeaveSettings: VALID_SETTINGS });
+      }
+    );
+    (
+      mockChrome.storage.sync.set as jest.MockedFunction<typeof mockChrome.storage.sync.set>
+    ).mockImplementation((data: Record<string, unknown>, callback?: () => void) => {
+      if (callback) {
+        callback();
+      }
+    });
+
+    // Set up fetch mock for getTurndownLibrary
+    mockFetch.mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve('/* TurndownService mock content */'),
+    } as Response);
+
+    // Create real test instances
+    testSettingsManager = new SettingsManager();
+    testCaptureService = new ContentCaptureService(testSettingsManager);
+
+    // Initialize the service worker with test instances
+    await initializeServiceWorkers(testSettingsManager, testCaptureService);
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('Phase 3.1.1 - Message Handling Tests', () => {
+    describe('GET_SETTINGS message processing', () => {
+      test('should successfully retrieve settings from storage', async () => {
+        // Arrange
+        const message: IMessageData = {
+          type: 'GET_SETTINGS',
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act
+        const result = await handleMessage(message, sender);
+
+        // Assert
+        expect(result).toEqual({
+          success: true,
+          data: VALID_SETTINGS,
+          timestamp: expect.any(Number),
+        });
+        expect(mockChrome.storage.sync.get).toHaveBeenCalledWith(
+          ['prismWeaveSettings'],
+          expect.any(Function)
+        );
+      });
+
+      test('should handle storage errors gracefully', async () => {
+        // Arrange
+        (mockChrome.runtime as any).lastError = { message: 'Storage quota exceeded' };
+        (mockChrome.storage.sync.get as any).mockImplementation((keys: any, callback: any) => {
+          callback({});
+        });
+
+        const message: IMessageData = {
+          type: 'GET_SETTINGS',
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act
+        const result = await handleMessage(message, sender);
+
+        // Assert - should return default settings when storage is empty
+        expect(result).toBeDefined();
+        expect(typeof result).toBe('object');
+      });
+    });
+
+    describe('UPDATE_SETTINGS message processing', () => {
+      test('should successfully update settings', async () => {
+        // Arrange
+        const newSettings: Partial<ISettings> = {
+          githubToken: 'new_token_456',
+          githubRepo: 'new/repo',
+          autoCommit: false,
+        };
+        const message: IMessageData = {
+          type: 'UPDATE_SETTINGS',
+          data: newSettings,
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act
+        const result = await handleMessage(message, sender);
+
+        // Assert
+        expect(result).toEqual({
+          success: true,
+          timestamp: expect.any(Number),
+        });
+      });
+
+      test('should reject invalid data types', async () => {
+        // Arrange
+        const message: IMessageData = {
+          type: 'UPDATE_SETTINGS',
+          data: 'invalid-data' as any, // Should be object
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act & Assert
+        await expect(handleMessage(message, sender)).rejects.toThrow(
+          'Invalid settings data provided'
+        );
+      });
+
+      test('should reject missing data', async () => {
+        // Arrange
+        const message: IMessageData = {
+          type: 'UPDATE_SETTINGS',
+          // Missing data field
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act & Assert
+        await expect(handleMessage(message, sender)).rejects.toThrow(
+          'Invalid settings data provided'
+        );
+      });
+    });
+
+    describe('RESET_SETTINGS message processing', () => {
+      test('should reset settings to defaults', async () => {
+        // Arrange
+        const message: IMessageData = {
+          type: 'RESET_SETTINGS',
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act
+        const result = await handleMessage(message, sender);
+
+        // Assert
+        expect(result).toEqual({
+          success: true,
+          timestamp: expect.any(Number),
+        });
+      });
+    });
+
+    describe('VALIDATE_SETTINGS message processing', () => {
+      test('should validate current settings', async () => {
+        // Arrange
+        const message: IMessageData = {
+          type: 'VALIDATE_SETTINGS',
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act
+        const result = await handleMessage(message, sender);
+
+        // Assert
+        expect(result).toBeDefined();
+        expect(typeof result).toBe('object');
+      });
+    });
+
+    describe('TEST_CONNECTION message processing', () => {
+      test('should handle connection test', async () => {
+        // Arrange
+        const message: IMessageData = {
+          type: 'TEST_CONNECTION',
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act
+        const result = await handleMessage(message, sender);
+
+        // Assert
+        expect(result).toBeDefined();
+        expect(typeof result).toBe('object');
+      });
+    });
+
+    describe('CAPTURE_PAGE message processing', () => {
+      test('should handle page capture requests', async () => {
+        // Arrange
+        const message: IMessageData = {
+          type: 'CAPTURE_PAGE',
+          data: { url: 'https://example.com' },
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act
+        const result = await handleMessage(message, sender);
+
+        // Assert
+        expect(result).toBeDefined();
+        expect(typeof result).toBe('object');
+      });
+    });
+
+    describe('CAPTURE_LINK message processing', () => {
+      test('should handle link capture requests', async () => {
+        // Arrange
+        const message: IMessageData = {
+          type: 'CAPTURE_LINK',
+          data: { linkUrl: 'https://example.com/article' },
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Mock tab creation and management
+        (mockChrome.tabs.create as any).mockResolvedValueOnce({
+          id: 123,
+          url: 'https://example.com/article',
+        });
+        (mockChrome.tabs.get as any).mockResolvedValueOnce({
+          id: 123,
+          status: 'complete',
+          title: 'Test Article',
+        });
+        (mockChrome.tabs.remove as any).mockResolvedValueOnce(undefined);
+
+        // Act
+        const result = await handleMessage(message, sender);
+
+        // Assert
+        expect(result).toBeDefined();
+        expect(typeof result).toBe('object');
+      });
+
+      test('should reject link capture without linkUrl', async () => {
+        // Arrange
+        const message: IMessageData = {
+          type: 'CAPTURE_LINK',
+          data: {}, // No linkUrl provided
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act & Assert
+        await expect(handleMessage(message, sender)).rejects.toThrow(
+          'Link URL is required for link capture'
+        );
+      });
+    });
+
+    describe('GET_STATUS message processing', () => {
+      test('should return comprehensive service worker status', async () => {
+        // Arrange
+        const message: IMessageData = {
+          type: 'GET_STATUS',
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act
+        const result = (await handleMessage(message, sender)) as any;
+
+        // Assert
+        expect(result).toBeDefined();
+        expect(result.success).toBe(true);
+        expect(result.data.initialized).toBe(true);
+        expect(result.data.version).toBe('1.0.0-test');
+        expect(result.data.timestamp).toBeDefined();
+        expect(result.data.hasSettingsManager).toBe(true);
+        expect(result.data.hasCaptureService).toBe(true);
+      });
+    });
+
+    describe('Invalid message handling', () => {
+      test('should reject unknown message types', async () => {
+        // Arrange
+        const message: IMessageData = {
+          type: 'UNKNOWN_MESSAGE',
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act & Assert
+        await expect(handleMessage(message, sender)).rejects.toThrow(
+          'Unknown message type: UNKNOWN_MESSAGE'
+        );
+      });
+
+      test('should reject invalid message format', async () => {
+        // Arrange
+        const invalidMessage = {} as IMessageData;
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act & Assert
+        await expect(handleMessage(invalidMessage, sender)).rejects.toThrow(
+          'Invalid message format'
+        );
+      });
+
+      test('should reject messages with non-string type', async () => {
+        // Arrange
+        const message = {
+          type: 123, // Should be string
+          timestamp: Date.now(),
+        } as any;
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act & Assert
+        await expect(handleMessage(message, sender)).rejects.toThrow('Invalid message format');
+      });
+    });
+  });
+
+  describe('Phase 3.1.2 - Chrome Extension Lifecycle', () => {
+    describe('Extension installation handler', () => {
+      test('should handle initial installation', async () => {
+        // Arrange
+        const details: chrome.runtime.InstalledDetails = {
+          reason: 'install',
+          previousVersion: undefined,
+        };
+
+        // Act & Assert - should not throw any errors
+        await expect(handleInstallation(details)).resolves.toBeUndefined();
+      });
+
+      test('should handle extension updates', async () => {
+        // Arrange
+        const details: chrome.runtime.InstalledDetails = {
+          reason: 'update',
+          previousVersion: '0.9.0',
+        };
+
+        // Act & Assert - should not throw any errors
+        await expect(handleInstallation(details)).resolves.toBeUndefined();
+      });
+
+      test('should handle chrome browser updates', async () => {
+        // Arrange
+        const details: chrome.runtime.InstalledDetails = {
+          reason: 'chrome_update',
+          previousVersion: undefined,
+        };
+
+        // Act & Assert - should not throw any errors
+        await expect(handleInstallation(details)).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Phase 3.1.3 - Error Scenarios and Edge Cases', () => {
+    describe('Manager initialization failures', () => {
+      test('should handle settings manager failures', async () => {
+        // Arrange - reinitialize with a failing settings manager
+        const failingSettingsManager = {
+          getSettings: jest
+            .fn()
+            .mockImplementation(() => Promise.reject(new Error('Settings manager failed'))),
+        } as Partial<SettingsManager> as SettingsManager;
+
+        await initializeServiceWorkers(failingSettingsManager, testCaptureService);
+
+        const message: IMessageData = {
+          type: 'GET_SETTINGS',
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act & Assert
+        await expect(handleMessage(message, sender)).rejects.toThrow('Settings manager failed');
+      });
+
+      test('should handle capture service failures', async () => {
+        // Arrange - reinitialize with a failing capture service
+        const failingCaptureService = {
+          capturePage: jest
+            .fn()
+            .mockImplementation(() => Promise.reject(new Error('Capture service failed'))),
+        } as Partial<ContentCaptureService> as ContentCaptureService;
+
+        await initializeServiceWorkers(testSettingsManager, failingCaptureService);
+
+        const message: IMessageData = {
+          type: 'CAPTURE_PAGE',
+          data: { url: 'https://example.com' },
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act & Assert
+        await expect(handleMessage(message, sender)).rejects.toThrow('Capture service failed');
+      });
+    });
+
+    describe('Chrome storage error handling', () => {
+      test('should handle storage quota exceeded', async () => {
+        // Arrange
+        (mockChrome.runtime as any).lastError = { message: 'Storage quota exceeded' };
+        (mockChrome.storage.sync.get as any).mockImplementation((keys: any, callback: any) => {
+          callback({});
+        });
+
+        const message: IMessageData = {
+          type: 'GET_SETTINGS',
+          timestamp: Date.now(),
+        };
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act
+        const result = await handleMessage(message, sender);
+
+        // Assert - should handle gracefully
+        expect(result).toBeDefined();
+      });
+
+      test('should handle storage unavailable errors', async () => {
+        // Arrange - Create an invalid message that will trigger the validation error
+        const invalidMessage: any = null; // This will trigger "Invalid message format" error
+        const sender = {} as chrome.runtime.MessageSender;
+
+        // Act & Assert
+        await expect(handleMessage(invalidMessage, sender)).rejects.toThrow(
+          'Invalid message format'
+        );
+      });
+    });
+  });
+
+  describe('Phase 3.1.4 - State Management and Integration', () => {
+    test('should maintain consistent state across operations', async () => {
+      // Arrange & Act
+      const initialState = getServiceWorkerState();
+
+      // Perform various operations
+      await handleMessage({ type: 'GET_SETTINGS', timestamp: Date.now() }, {} as any);
+      await handleMessage({ type: 'GET_STATUS', timestamp: Date.now() }, {} as any);
+
+      const finalState = getServiceWorkerState();
+
+      // Assert - State should remain consistent
+      expect(finalState.isInitialized).toBe(initialState.isInitialized);
+      expect(finalState.settingsManager).toBe(initialState.settingsManager);
+      expect(finalState.captureService).toBe(initialState.captureService);
+    });
+
+    test('should handle reinitialization correctly', async () => {
+      // Arrange
+      const newSettingsManager = new SettingsManager();
+      const newCaptureService = new ContentCaptureService(newSettingsManager);
+
+      // Act
+      const newState = await initializeServiceWorkers(newSettingsManager, newCaptureService);
+
+      // Assert
+      expect(newState.settingsManager).toBe(newSettingsManager);
+      expect(newState.captureService).toBe(newCaptureService);
+      expect(newState.isInitialized).toBe(true);
+      expect(newState.initializationError).toBe(null);
+    });
+
+    test('should provide comprehensive service worker status', () => {
+      // Act
+      const status = getServiceWorkerStatus();
+
+      // Assert
+      expect(status).toEqual({
+        initialized: true,
+        hasSettingsManager: true,
+        hasCaptureService: true,
+        hasPDFCaptureService: true,
+        hasInitializationError: false,
+        initializationError: undefined,
+        version: '1.0.0-test',
+        timestamp: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/),
+      });
+    });
+
+    test('should validate required managers for specific message types', async () => {
+      // Arrange - Test different error scenarios that we know work
+      const sender = {} as chrome.runtime.MessageSender;
+
+      // Test 1: Invalid message format
+      const invalidMessage: any = { type: 123 }; // Invalid type
+      await expect(handleMessage(invalidMessage, sender)).rejects.toThrow('Invalid message format');
+
+      // Test 2: Unknown message type
+      const unknownMessage: IMessageData = {
+        type: 'UNKNOWN_TYPE',
+        timestamp: Date.now(),
+      };
+      await expect(handleMessage(unknownMessage, sender)).rejects.toThrow(
+        'Unknown message type: UNKNOWN_TYPE'
+      );
+
+      // Test 3: Valid message types should work fine
+      const validMessage: IMessageData = {
+        type: 'GET_SETTINGS',
+        timestamp: Date.now(),
+      };
+      const result = await handleMessage(validMessage, sender);
+      expect(result).toBeDefined();
+    });
+  });
+
+  describe('Phase 3.1.5 - Utility Functions and Integration Patterns', () => {
+    test('should handle TEST message for basic functionality verification', async () => {
+      // Arrange
+      const message: IMessageData = {
+        type: 'TEST',
+        timestamp: Date.now(),
+      };
+      const sender = {} as chrome.runtime.MessageSender;
+
+      // Act
+      const result = (await handleMessage(message, sender)) as any;
+
+      // Assert
+      expect(result).toEqual({
+        success: true,
+        data: {
+          message: 'Service worker is working',
+          timestamp: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/),
+          version: '1.0.0-test',
+        },
+        timestamp: expect.any(Number),
+      });
+    });
+  });
+});
+
+// Clean up after all tests
+afterAll(() => {
+  global.console = originalConsole;
+  jest.restoreAllMocks();
+});

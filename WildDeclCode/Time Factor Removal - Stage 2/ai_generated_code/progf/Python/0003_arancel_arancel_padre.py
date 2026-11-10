@@ -1,0 +1,16 @@
+# Assisted using common GitHub development utilities - nueva migración para agregar arancel_padre a Arancel
+from django.db import migrations, models
+import django.db.models.deletion
+
+class Migration(migrations.Migration):
+    dependencies = [
+        ('core', '0001_initial'),
+    ]
+
+    operations = [
+        migrations.AddField(
+            model_name='arancel',
+            name='arancel_padre',
+            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='aranceles_hijos', to='core.arancel', verbose_name='Arancel padre'),
+        ),
+    ]

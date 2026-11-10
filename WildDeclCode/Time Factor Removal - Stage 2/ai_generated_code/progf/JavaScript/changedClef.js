@@ -1,0 +1,56 @@
+// Aided using common development resources. Prompt: "I want to move a server-side function in a django server to the client. Write a javascript equivalent to this code: def changedClef(self,id,clef="bass"):  
+//        self_abc=self.get(id=id).abc
+//        clef_index=self_abc.index("\nK:")
+//        next_newline=self_abc.index("\n",clef_index+1)
+//        injection=" clef={}".format(clef)
+//        return "".join((self_abc[:next_newline],injection,self_abc[next_newline:]))"
+
+//This function add clef information when no such information exists.
+function changedClefOld(abc, clef = "bass") {
+    abc=removeAbcComments(abc)
+    let clef_index = abc.indexOf("\nK:");
+    let next_newline = abc.indexOf("\n", clef_index + 1);
+    let injection = ` clef=${clef}`;
+    let out=`${abc.substring(0, next_newline)}${injection}${abc.substring(next_newline)}`;
+    //console.log(out)
+    return out;
+}
+
+
+//Revised version that works with tunes with existing clef information
+function changedClef(abc, clef = "bass") {
+    //abc=removeAbcComments(abc)
+
+    var clefRegex=/clef\s{0,}=\s{0,}\S{1,}/g //Matches anything in the format "clef = {}", with some or no whitespace between text
+
+    //let clef_index = abc.indexOf("\nK:");
+    //let next_newline = abc.indexOf("\n", clef_index + 1);
+    //let injection = ` clef=${clef}`;
+    //let out=`${abc.substring(0, next_newline)}${injection}${abc.substring(next_newline)}`;
+    let out=abc.replace(clefRegex,`clef = ${clef} `)
+    console.log(out)
+    if (out==abc){ //If new function causes no changes, use old function instead.
+        return changedClefOld(abc,clef)
+    }else{
+    return out;
+    }
+}
+
+function changeClefButton(){
+    return function(){
+
+    }
+
+}
+
+// Initially Aided using common development resources, but with many bugs. Revised by Nicholas Gower. Prompt: "Given some text where comments are indicated by \"%\", write a JavaScript function that removes all comments from a string."
+function removeAbcComments(inputText) {
+    // Regular expression to match comments indicated by "%"
+    var AbcCommentPattern = /\%.{1,}\n/g;
+    
+    // Remove comments from the input text
+    var result = inputText.replace(AbcCommentPattern, '\n');
+
+    return result;
+}
+

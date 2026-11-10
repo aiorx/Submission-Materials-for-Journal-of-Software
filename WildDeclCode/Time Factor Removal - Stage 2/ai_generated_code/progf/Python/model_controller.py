@@ -1,0 +1,24 @@
+from app.services.ollama_service import OllamaService
+from app.models.request_models import QueryRequest
+
+class ModelController:
+    def __init__(self):
+        self._ollama_service = OllamaService()
+
+    async def get_available_models(self):
+        """Get list of available models"""
+        models = await self._ollama_service.list_models()
+        return {"models": models}
+
+    async def generate_response(self, query: QueryRequest):
+        """Generate response from the selected model"""
+        try:
+            response = await self._ollama_service.generate_response(
+                model=query.model,
+                prompt=query.prompt
+            )
+            return {"response": response}
+        except Exception as e:
+            return {"error": str(e)}
+
+# Supported via standard GitHub programming aids

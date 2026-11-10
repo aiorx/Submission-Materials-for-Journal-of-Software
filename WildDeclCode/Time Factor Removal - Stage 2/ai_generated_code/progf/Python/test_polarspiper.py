@@ -1,0 +1,124 @@
+# WARNING: These tests are Assisted using common GitHub development utilities.
+
+import polars as pl
+import pytest
+
+from polarspiper import (
+    cast_time_in_zone_string_to_list_of_float,
+    convert_times_to_datetime,
+    drop_columns_that_are_all_null,
+    drop_rows_that_are_all_null,
+    semicircle_to_degrees,
+    sort_columns_by_null_count,
+    try_convert_dtypes_to_float_if_possible,
+    try_to_datetime,
+    try_to_numeric,
+    utf8_promotion,
+)
+
+
+@pytest.fixture
+def get_df() -> pl.DataFrame:
+    df = pl.DataFrame(
+        {
+            "a": [1, 2, 0],
+            "all_null_col": [None, None, None],
+            "d_lat": [1000000000, 2000000000, 3000000000],
+            "d_lon": [1000000000, 2000000000, 3000000000],
+            "timestamp": [
+                "2023-01-01 00:00:00",
+                "2023-01-02 00:00:00",
+                "2023-01-03 00:00:00",
+            ],
+            "time_in_hr_zone_sec": ["1|2|3", "4|5|6", "7|8|9"],
+            "floatstr": ["1.0", "2.0", "3.0"],
+        }
+    )
+
+    null_df = pl.DataFrame({c: None for c in df.columns})
+    return pl.concat([df, null_df])
+
+
+def test_drop_rows_that_are_all_null(get_df) -> None:
+    height = get_df.height
+    result = drop_rows_that_are_all_null(get_df)
+    assert result.height == height - 1
+
+
+def test_drop_columns_that_are_all_null(get_df) -> None:
+    result = drop_columns_that_are_all_null(get_df)
+    assert "all_null_col" not in result.columns
+
+
+def test_convert_times_to_datetime_with_custom_columns(get_df) -> None:
+    get_df = get_df.with_columns(pl.col("timestamp").alias("custom_time"))
+    result = convert_times_to_datetime(get_df, cols=["custom_time"])
+    assert result["custom_time"].dtype == pl.Datetime
+
+
+def test_cast_time_in_zone_string_to_list_of_float_with_custom_columns(
+    get_df,
+) -> None:
+    get_df = get_df.with_columns(
+        pl.col("time_in_hr_zone_sec").alias("custom_time_zone")
+    )
+    result = cast_time_in_zone_string_to_list_of_float(
+        get_df, cols=["custom_time_zone"]
+    )
+    assert result["custom_time_zone"].dtype == pl.List(pl.Float64)
+    assert (result["custom_time_zone"][0] == [1.0, 2.0, 3.0]).all()
+
+
+def test_semicircle_to_degrees(get_df) -> None:
+    result = semicircle_to_degrees(get_df)
+    assert result["d_lat"][0] == pytest.approx(1000000000 / 2**31 * 180)
+    assert result["d_lon"][0] == pytest.approx(1000000000 / 2**31 * 180)
+
+
+def test_convert_times_to_datetime(get_df) -> None:
+    result = convert_times_to_datetime(get_df)
+    assert result["timestamp"].dtype == pl.Datetime
+
+
+def test_cast_time_in_zone_string_to_list_of_float(get_df) -> None:
+    result = cast_time_in_zone_string_to_list_of_float(get_df)
+    assert result["time_in_hr_zone_sec"].dtype == pl.List(pl.Float64)
+    assert (result["time_in_hr_zone_sec"][0] == [1.0, 2.0, 3.0]).all()
+
+
+def test_utf8_promotion(get_df) -> None:
+    result = utf8_promotion(get_df)
+    assert result["timestamp"].dtype == pl.Datetime
+    assert result["floatstr"].dtype == pl.Float64
+
+
+def test_try_convert_dtypes_to_float_if_possible(get_df) -> None:
+    result = try_convert_dtypes_to_float_if_possible(get_df)
+    assert result["a"].dtype == pl.Float64
+
+
+def test_try_to_datetime(get_df) -> None:
+    df, success = try_to_datetime(get_df, "timestamp")
+    assert success
+    assert df["timestamp"].dtype == pl.Datetime
+
+
+def test_try_to_numeric(get_df) -> None:
+    df, success = try_to_numeric(get_df, "floatstr", pl.Float64)
+    assert success
+    assert df["floatstr"].dtype == pl.Float64
+
+
+def test_sort_columns_by_null_count(get_df) -> None:
+    result = sort_columns_by_null_count(get_df)
+    null_counts = get_df.null_count().to_dict(as_series=False)
+    sorted_columns = sorted(null_counts, key=null_counts.get)
+    assert result.columns == sorted_columns
+
+
+def test_sort_columns_by_null_count_lazyframe(get_df) -> None:
+    lazy_df = get_df.lazy()
+    result = sort_columns_by_null_count(lazy_df).collect()
+    null_counts = get_df.null_count().to_dict(as_series=False)
+    sorted_columns = sorted(null_counts, key=null_counts.get)
+    assert result.columns == sorted_columns

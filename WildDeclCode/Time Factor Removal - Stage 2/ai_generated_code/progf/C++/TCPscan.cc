@@ -1,0 +1,492 @@
+#include "TCPscan.hh"
+
+extern int GLOBAL_TIMEOUT;
+int timeout_split_2 = -1;
+tcp_socket::tcp_socket(char *domain, int port, std::vector<std::string> interfaces_addresses,
+                       std::string mainInterface, std::vector<std::string> dest_adresses)
+{
+  // This remove the interface from the adrress, i dont know if its an enviroment issue, but
+  // setupinterfaces(), does return ipv6 adresses with interface
+  // TODO: Make this more robust
+  for (auto &i : interfaces_addresses)
+  {
+    size_t percent_pos = i.find('%');
+    if (percent_pos != std::string::npos)
+    {
+      i = i.substr(0, percent_pos);
+    }
+  }
+
+  adresses = dest_adresses;
+  
+
+  // for each address and for each adress of interfaces make packet and send it
+  // if atleast on one address we get open, the port is considered as being closed.
+  int temp_res = 1;
+  // print interfaces addresses 
+  
+  for (std::string i : adresses)
+  {
+   
+    timeout_split_2 = interfaces_addresses.size();
+    for (std::string j : interfaces_addresses)
+    {
+      
+      if (check_adresses(i, j) == 3)
+      {
+        continue;
+      }
+      setsocket(i, IPPROTO_TCP, j);
+      temp_res = craft_packet(j, i, port);
+      if (temp_res == 0)
+      {
+        return;
+      }
+      setsocket(i, IPPROTO_TCP, j);
+      temp_res = craft_packet(j, i, port);
+      if (temp_res == 0)
+      {
+        return;
+      }
+    }
+    // we create output and push it
+    output_tcp temp(port, i, 2);
+    out.push_back(temp);
+    return;
+  };
+};
+
+void tcp_socket::setsocket(std::string ip_adress, int st, std::string bind_adr)
+{
+  st = IPPROTO_TCP;
+  int version;
+  for (char i : ip_adress)
+  {
+    if (i == '.')
+    {
+      version = PF_INET;
+      break;
+    }
+    else if (i == ':')
+    {
+      version = PF_INET6;
+      break;
+    }
+  }
+
+  sockfd = socket(version, SOCK_RAW, st);
+  if (sockfd == -1)
+  {
+
+    throw std::runtime_error("Error(4): udp_socket creation failed");
+  }
+};
+
+/**
+ * @brief Calculates the one's complement checksum for a given data block.
+ *
+ * This function calculates the checksum of a given buffer using the
+ * one's complement method. It is commonly used in networking protocols
+ * such as TCP/IP to ensure data integrity.
+ *
+ * The checksum calculation works by summing 16-bit words and handling
+ * any overflow with carry bits. If the length of the buffer is odd, the
+ * last byte is added separately. The result is then negated (one's complement).
+ *
+ * @param b Pointer to the data buffer to calculate the checksum for.
+ * @param len Length of the data buffer in bytes.
+ *
+ * @return The computed checksum as a 16-bit unsigned short.
+ *
+ * @note This function was Assisted with basic coding tools.
+ */
+unsigned short checksum(void *b, int len)
+{
+  unsigned short *buf = (unsigned short *)b;
+  unsigned int sum = 0;
+  unsigned short result;
+
+  // Calculate sum of all 16-bit words
+  for (sum = 0; len > 1; len -= 2)
+  {
+    sum += *buf++;
+  }
+
+  // If there is a left over byte, add it
+  if (len == 1)
+  {
+    sum += *(unsigned char *)buf;
+  }
+
+  // Add carry to the sum (one's complement addition)
+  sum = (sum >> 16) + (sum & 0xFFFF);
+  sum += (sum >> 16);
+  result = ~sum; // One's complement of sum
+  return result;
+}
+
+/**
+ * @brief Craft a packet
+ *
+ * @param source,       source adress
+ * @param destination,  destination adress
+ * @param port,         port that needs to be scanned
+ * @return int,         0 on succes else, 1
+ *
+ */
+int tcp_socket::craft_packet(std::string source, std::string destination, int port)
+{
+  int type1 = 0, type2 = 0;
+  for (char i : source)
+  {
+    if (i == '.')
+    {
+      type1 = PF_INET;
+      break;
+    }
+    else if (i == ':')
+    {
+      type1 = PF_INET6;
+      break;
+    }
+  }
+  for (char i : destination)
+  {
+    if (i == '.')
+    {
+      type2 = PF_INET;
+      break;
+    }
+    else if (i == ':')
+    {
+      type2 = PF_INET6;
+      break;
+    }
+  }
+  if (type1 != type2)
+  {
+    return 1; // unseccessfull
+  }
+  else if (type1 == PF_INET)
+  {
+    // we want to generate unique source ports to scan from
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    memset(&ip_header, 0, sizeof(ip_header));
+    ip_header.version = 4;
+    ip_header.ihl = 5;
+    ip_header.tos = 0;
+    ip_header.tot_len = sizeof(ip_header) + sizeof(tcp_header);
+    ip_header.id = htons(22232);
+    ip_header.frag_off = 0;
+    ip_header.ttl = 64;
+    ip_header.protocol = IPPROTO_TCP;
+    ip_header.check = 0;
+    ip_header.saddr = inet_addr(source.c_str());
+    ip_header.daddr = inet_addr(destination.c_str());
+
+    tcp_header.source = htons(22232);
+    tcp_header.dest = htons(port);
+    tcp_header.seq = 0;
+    tcp_header.ack_seq = 0;
+    tcp_header.doff = 5;
+    tcp_header.fin = 0;
+    tcp_header.syn = 1;
+    tcp_header.rst = 0;
+    tcp_header.psh = 0;
+    tcp_header.ack = 0;
+    tcp_header.urg = 0;
+    tcp_header.window = htons(5840);
+    tcp_header.check = 0;
+    tcp_header.urg_ptr = 0;
+
+    psh.source_address = inet_addr(source.c_str());
+    psh.dest_address = inet_addr(destination.c_str());
+    psh.placeholder = 0;
+    psh.protocol = IPPROTO_TCP;
+    psh.tcp_length = htons(sizeof(tcp_header));
+
+    int packet_size = sizeof(struct pseudo_header) + sizeof(struct tcphdr);
+    std::unique_ptr<char[]> pseudopacket(new char[packet_size]);
+
+    memcpy(pseudopacket.get(), &psh, sizeof(struct pseudo_header));
+    memcpy(pseudopacket.get() + sizeof(struct pseudo_header), &tcp_header, sizeof(struct tcphdr));
+    tcp_header.check = checksum((unsigned short *)pseudopacket.get(), packet_size);
+
+    ip_header.check = checksum((unsigned short *)&ip_header, sizeof(ip_header));
+
+    int p_size = sizeof(ip_header) + sizeof(struct tcphdr);
+    std::unique_ptr<char[]> packet(new char[p_size]);
+    memcpy(packet.get(), &ip_header, sizeof(ip_header));
+    memcpy(packet.get() + sizeof(ip_header), &tcp_header, sizeof(struct tcphdr));
+
+    struct sockaddr_in dest;
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(port);
+    dest.sin_addr.s_addr = inet_addr(destination.c_str());
+
+    const int enable = 1;
+    if (setsockopt(sockfd, IPPROTO_IP, IP_HDRINCL, &enable, sizeof(enable)) < 0)
+    {
+      perror("Error setsockopt");
+      close(sockfd);
+      return 1;
+    }
+
+    if (sendto(sockfd, packet.get(), p_size, 0, (struct sockaddr *)&dest, sizeof(dest)) < 0)
+    {
+      perror("Send failed");
+      return 1;
+    }
+
+    struct timeval tv;
+    tv.tv_sec = 0;  // 0 seconds
+    tv.tv_usec = 50000;
+    
+    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0)
+    {
+      perror("setsockopt failed");
+      close(sockfd);
+      return 1;
+    }
+
+    
+
+    std::vector<char> resp(66538);
+    struct sockaddr_storage sender;
+    socklen_t sender_len = sizeof(sender);
+    
+    
+    while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(GLOBAL_TIMEOUT / timeout_split_2 ))
+    {
+      ssize_t recv_got = recvfrom(sockfd, resp.data(), resp.size(), 0, (struct sockaddr *)&sender, &sender_len);
+      
+      if (recv_got > 0)
+      {
+        struct tcphdr *tcp = (struct tcphdr *)(resp.data() + sizeof(struct iphdr));
+        if (ntohs(tcp->source) != port)
+        {
+          continue;
+        }
+        else if (tcp->syn && tcp->ack)
+        {
+          // we create a output and push it
+          output_tcp temp(port, destination, 0);
+          out.push_back(temp);
+          close(sockfd);
+          return 0;
+        }
+        else if (tcp->rst)
+        {
+
+          output_tcp temp(port, destination, 1);
+          out.push_back(temp);
+          close(sockfd);
+          return 0;
+        }
+      }
+      if (std::chrono::steady_clock::now() - start > std::chrono::milliseconds(GLOBAL_TIMEOUT / (timeout_split_2)))
+      {
+        
+        break;
+      }
+      
+    }
+    
+    close(sockfd);
+    return 1;
+  }
+  else if (type1 == PF_INET6)
+  {
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    std::random_device rd;                            // seed
+    std::mt19937 gen(rd());                           // generator
+    std::uniform_int_distribution<> dis(1024, 65535); // distribution
+    int random_source = dis(gen);                     // random source port
+    ip6_header.ip6_ctlun.ip6_un1.ip6_un1_flow = htonl((6 << 28));
+    ip6_header.ip6_ctlun.ip6_un1.ip6_un1_hlim = 64;
+    ip6_header.ip6_ctlun.ip6_un1.ip6_un1_nxt = IPPROTO_TCP;
+    ip6_header.ip6_ctlun.ip6_un1.ip6_un1_plen = htons(sizeof(tcp_header));
+    inet_pton(AF_INET6, source.c_str(), &(ip6_header.ip6_src));
+    inet_pton(AF_INET6, destination.c_str(), &(ip6_header.ip6_dst));
+
+    tcp_header.source = htons(random_source);
+    tcp_header.dest = htons(port);
+    tcp_header.seq = htonl(1);
+    tcp_header.doff = 5;
+    tcp_header.fin = 0;
+    tcp_header.syn = 1;
+    tcp_header.rst = 0;
+    tcp_header.psh = 0;
+    tcp_header.ack = htonl(0);
+    tcp_header.urg = 0;
+    tcp_header.window = htons(5840);
+    tcp_header.check = 0;
+    tcp_header.urg_ptr = 0;
+
+    struct ipv6_pseudo_header ph;
+    memset(&ph, 0, sizeof(ph));
+
+    inet_pton(AF_INET6, source.c_str(), &(ph.source_address));
+    inet_pton(AF_INET6, destination.c_str(), &(ph.dest_address));
+
+    ph.length = htonl(sizeof(tcp_header));
+    ph.protocol_type = IPPROTO_TCP;
+
+    int packet_size = sizeof(struct ipv6_pseudo_header) + sizeof(struct tcphdr);
+    std::unique_ptr<char[]> pseudopacket(new char[packet_size]);
+    memcpy(pseudopacket.get(), &ph, sizeof(struct ipv6_pseudo_header));
+    memcpy(pseudopacket.get() + sizeof(struct ipv6_pseudo_header), &tcp_header,
+           sizeof(struct tcphdr));
+
+    tcp_header.check = checksum((u_int8_t *)pseudopacket.get(), packet_size);
+
+    int p_size = sizeof(struct ip6_hdr) + sizeof(struct tcphdr);
+    std::unique_ptr<char[]> packet(new char[p_size]);
+    memset(packet.get(), 0, p_size);
+    memcpy(packet.get(), &ip6_header, sizeof(ip6_header));
+    memcpy(packet.get() + sizeof(struct ip6_hdr), &tcp_header, sizeof(struct tcphdr));
+    struct sockaddr_in6 dest;
+    dest.sin6_family = AF_INET6;
+    dest.sin6_port = 0;
+    if (inet_pton(AF_INET6, destination.c_str(), &dest.sin6_addr) <= 0)
+    {
+      std::cerr << "Invalid destination address: " << destination << std::endl;
+      return 1;
+    }
+
+    const int enable = 1;
+    if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_HDRINCL, &enable, sizeof(enable)) < 0)
+    {
+      std::cerr << "Error setsockopt" << std::endl;
+      close(sockfd);
+      return 1;
+    }
+
+    if (sendto(sockfd, packet.get(), p_size, 0, (struct sockaddr *)&dest, sizeof(dest)) < 0)
+    {
+      std::cout << "Doesnt work send" << std::endl;
+      return 1;
+    }
+    
+
+    struct timeval tv;
+    tv.tv_sec = GLOBAL_TIMEOUT / timeout_split_2;
+    tv.tv_usec = 0;
+
+    std::vector<char> resp(65536);
+    struct sockaddr_storage sender;
+    socklen_t sender_len = sizeof(sender);
+    
+    
+    while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(GLOBAL_TIMEOUT / timeout_split_2))
+    {
+      ssize_t recv_got = recvfrom(sockfd, resp.data(), resp.size(), MSG_DONTWAIT,
+                                  (struct sockaddr *)&sender, &sender_len);
+      if (recv_got < 0)
+      {
+        continue;
+      }
+      else if (recv_got > 0)
+      {
+        struct tcphdr *tcp = reinterpret_cast<struct tcphdr *>(resp.data());
+
+        if (htons(tcp->dest) != random_source)
+        {
+          continue;
+        }
+        if (tcp->syn && tcp->ack)
+        {
+          output_tcp temp(port, destination, 0);
+          out.push_back(temp);
+          close(sockfd);
+          return 0;
+        }
+        else if (tcp->rst)
+        {
+          output_tcp temp(port, destination, 1);
+          out.push_back(temp);
+          close(sockfd);
+          return 0;
+        }
+      }
+      if (std::chrono::steady_clock::now() - start > std::chrono::milliseconds(GLOBAL_TIMEOUT / timeout_split_2))
+      {
+        break;
+      }
+    }
+
+    close(sockfd);
+    return 1;
+  }
+  close(sockfd);
+
+  // now both adresses will be the same type, we need to craft the ipheader
+  // accoring to its ip type
+  // because of that we will devide this function from here
+  return 1;
+};
+
+int tcp_socket::check_adresses(std::string addr1, std::string addr2)
+{
+  int type1 = 0, type2 = 0;
+  for (char i : addr1)
+  {
+    if (i == '.')
+    {
+      type1 = PF_INET;
+      break;
+    }
+    else if (i == ':')
+    {
+      type1 = PF_INET6;
+      break;
+    }
+  }
+  for (char i : addr2)
+  {
+    if (i == '.')
+    {
+      type2 = PF_INET;
+      break;
+    }
+    else if (i == ':')
+    {
+      type2 = PF_INET6;
+      break;
+    }
+  }
+  if (type1 == PF_INET && type2 == PF_INET)
+  {
+    return 1;
+  }
+  else if (type1 == PF_INET6 && type2 == PF_INET6 || type1 == PF_INET && type2 == PF_INET6)
+  {
+    return 2;
+  }
+  else
+    return 3;
+};
+
+void tcp_socket::print_output()
+{
+  for (auto i : out)
+  {
+    i.print_state();
+  }
+}
+
+void output_tcp::print_state()
+{
+  if (open_closed == 1)
+  {
+    std::cout << ip << " " << port << " tcp closed" << std::endl;
+  }
+  else if (open_closed == 0)
+  {
+    std::cout << ip << " " << port << " tcp open" << std::endl; // 0 OPEN
+  }
+  else
+  {
+    std::cout << ip << " " << port << " tcp filtered" << std::endl;
+  }
+}

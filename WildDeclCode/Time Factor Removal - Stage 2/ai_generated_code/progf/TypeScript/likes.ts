@@ -1,0 +1,27 @@
+// Also Aided with basic GitHub coding tools.
+export const likes = [
+  {
+    userId: 1,
+    tweetId: 1,
+  },
+  {
+    userId: 1,
+    tweetId: 2,
+  },
+  {
+    userId: 2,
+    tweetId: 1,
+  },
+  {
+    userId: 2,
+    tweetId: 2,
+  },
+  {
+    userId: 3,
+    tweetId: 1,
+  },
+  {
+    userId: 3,
+    tweetId: 2,
+  },
+];

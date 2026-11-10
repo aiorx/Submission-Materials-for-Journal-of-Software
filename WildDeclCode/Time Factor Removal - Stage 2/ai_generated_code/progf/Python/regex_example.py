@@ -1,0 +1,72 @@
+import re
+
+THE_STRING = (
+    "This is a string with a number in it: 12345\n"
+    "Now is the time for all good men to come to the aid of their country.\n"
+    "See the quick red fox jump over the lazy brown dog.\n"
+)
+
+# Code above this comment line was manually typed in.
+# All following code was Assisted using common GitHub development utilities based on the comment prompts.  There are some minor edits
+# for purposes of formatting the output.  None of the regular expressions Assisted using common GitHub development utilities were modified.
+
+
+# function to print all matches in a regular expression
+def print_matches(pattern, string):
+    print(f"Pattern: {pattern}")
+    print(f"String: {string}")
+    print(">>>Matches:")
+    for match in re.finditer(pattern, string):
+        print(f"  {match.group()}")
+    print()
+
+
+# function to count the number of occurrences of a regular expression
+def count_matches(pattern, string):
+    print(f"Pattern: {pattern}")
+    print(f"String: {string}")
+    print(">>>Count of Matches:")
+    print(len(re.findall(pattern, string)))
+    print()
+
+# function to print all lines with a match in a regular expression
+def print_lines(pattern, string):
+    print(f"Pattern: {pattern}")
+    print(f"String: {string}")
+    print(">>>Lines with Matches:")
+    for match in re.finditer(pattern, string):
+        print(f"  {match.group()}")
+    print()
+
+
+if __name__ == "__main__":
+    print_matches("the", THE_STRING)
+
+    # regular expression to find all strings with the phrase "all good men"  Commentary: this did not produce any recommended code.
+
+    # regular expression to find words that start with "g" and end with "d"
+    print_matches(r"\b\w*g\w*d\b", THE_STRING)
+
+    # regular expression with look behind of "the" and look ahead of "to"
+    print_matches(r"(?<=the).+(?=to)", THE_STRING)
+
+    # print all words that start with "t" or "T" and end with a consonant
+    print_matches(r"\b[tT]\w+[bcdfghjklmnpqrstvwxyz]\b", THE_STRING)
+
+    # regular expression to find numbers
+    print_matches(r"\d+", THE_STRING)
+
+    # count the number of words in the string
+    count_matches(r"\w+", THE_STRING)
+
+    # count number of words that start with "t"
+    count_matches(r"\bt\w+", THE_STRING)
+
+    # count number of words that start with "t" or "T"
+    count_matches(r"\b[tT]\w+", THE_STRING)
+
+    # print lines that contain the word "the"
+    print_lines(r".*the.*", THE_STRING)
+
+    # print lines that contain a word with the letter "z"
+    print_lines(r".*\w*z\w*.*", THE_STRING)

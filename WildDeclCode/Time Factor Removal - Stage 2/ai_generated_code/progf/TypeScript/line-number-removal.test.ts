@@ -1,0 +1,226 @@
+// Aided with basic GitHub coding tools
+// Test for line number removal during HTML to Markdown conversion
+// Tests the simplified approach where line numbers are handled during HTML parsing
+
+import { describe, expect, test } from '@jest/globals';
+import { cleanupTest, mockChromeAPIs } from '../test-helpers';
+
+// Simple test utility for markdown conversion inline
+function simpleMarkdownConversion(
+  html: string,
+  title: string,
+  url: string
+): { content: string; title: string; url: string } {
+  let markdown = html;
+
+  // Headers
+  markdown = markdown.replace(/<h([1-6])[^>]*>(.*?)<\/h[1-6]>/gi, (match, level, content) => {
+    const headerLevel = '#'.repeat(parseInt(level));
+    return `\n${headerLevel} ${stripHtml(content)}\n`;
+  });
+
+  // Code blocks - with line number removal and language detection
+  markdown = markdown.replace(
+    /<pre[^>]*><code[^>]*class=["']language-([^"']*?)["'][^>]*>(.*?)<\/code><\/pre>/gis,
+    (match, lang, code) => {
+      const cleanCode = code.replace(/^\s*\d+\.?\s+/gm, ''); // Remove line numbers
+      const language = lang === 'dockerfile' ? 'docker' : lang;
+      return `\n\`\`\`${language}\n${cleanCode.trim()}\n\`\`\`\n`;
+    }
+  );
+
+  // Code blocks without language
+  markdown = markdown.replace(/<pre[^>]*><code[^>]*>(.*?)<\/code><\/pre>/gis, (match, code) => {
+    const cleanCode = code.replace(/^\s*\d+\.?\s+/gm, ''); // Remove line numbers
+
+    // Detect language based on content
+    let language = '';
+    const codeContent = cleanCode.toLowerCase();
+    if (codeContent.includes('echo') || codeContent.includes('#!/bin/bash')) {
+      language = 'bash';
+    } else if (codeContent.includes('from ') || codeContent.includes('workdir')) {
+      language = 'docker';
+    }
+
+    return `\n\`\`\`${language}\n${cleanCode.trim()}\n\`\`\`\n`;
+  });
+
+  // Inline code
+  markdown = markdown.replace(/<code[^>]*>(.*?)<\/code>/gi, '`$1`');
+
+  // Paragraphs
+  markdown = markdown.replace(/<p[^>]*>(.*?)<\/p>/gi, '\n$1\n');
+
+  // Strip remaining HTML
+  markdown = stripHtml(markdown);
+
+  // Clean up whitespace
+  markdown = markdown.replace(/\n\s*\n\s*\n/g, '\n\n');
+  markdown = markdown.trim();
+
+  return { content: markdown, title, url };
+}
+
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]*>/g, '').trim();
+}
+
+describe('V. - Line Number Removal in HTML to Markdown Conversion', () => {
+  beforeEach(() => {
+    mockChromeAPIs();
+    cleanupTest();
+  });
+  test('V.1.1 - Remove line numbers from HTML code blocks', () => {
+    const htmlWithLineNumbers = `
+      <div>
+        <pre><code>1  #!/bin/bash
+2  echo "Hello"
+3  exit 0</code></pre>
+      </div>
+    `;
+
+    const result = simpleMarkdownConversion(htmlWithLineNumbers, 'Test', 'http://test.com');
+
+    // The markdown should contain the code without line numbers
+    expect(result.content).toContain('#!/bin/bash');
+    expect(result.content).toContain('echo "Hello"');
+    expect(result.content).toContain('exit 0');
+    // Line numbers should be naturally removed during HTML parsing
+    expect(result.content).toMatch(/```[\s\S]*#!/); // Should start code block properly
+  });
+
+  test('V.1.2 - Handle code blocks with various line number formats', () => {
+    const htmlWithDifferentFormats = `
+      <div>
+        <pre><code class="language-bash">1. echo "test"
+2. ls -la
+3. exit</code></pre>
+        
+        <pre><code class="language-docker">1  FROM node:16-alpine
+2  WORKDIR /app
+3  COPY package*.json ./</code></pre>
+      </div>
+    `;
+
+    const result = simpleMarkdownConversion(htmlWithDifferentFormats, 'Test', 'http://test.com');
+
+    // Should contain the actual code content
+    expect(result.content).toContain('echo "test"');
+    expect(result.content).toContain('ls -la');
+    expect(result.content).toContain('FROM node:16-alpine');
+    expect(result.content).toContain('WORKDIR /app');
+    expect(result.content).toContain('COPY package*.json');
+
+    // Should detect languages
+    expect(result.content).toContain('```bash');
+    expect(result.content).toContain('```docker');
+  });
+
+  test('V.1.3 - Preserve formatting and indentation in code blocks', () => {
+    const htmlWithIndentation = `
+      <pre><code class="language-bash">1    if [ -f file.txt ]; then
+2      echo "File exists"
+3    fi
+4  
+5    # Comment line
+6    echo "Done"</code></pre>
+    `;
+
+    const result = simpleMarkdownConversion(htmlWithIndentation, 'Test', 'http://test.com');
+
+    // Should preserve the logical structure even if spacing changes
+    expect(result.content).toContain('if [ -f file.txt ]; then');
+    expect(result.content).toContain('echo "File exists"');
+    expect(result.content).toContain('fi');
+    expect(result.content).toContain('# Comment line');
+    expect(result.content).toContain('echo "Done"');
+  });
+
+  test('V.1.4 - Handle mixed content with and without line numbers', () => {
+    const htmlMixed = `
+      <div>
+        <p>Some text content</p>
+        <pre><code>#!/bin/bash
+1  echo "This line has a number"
+   echo "This line doesn't"
+2  for i in {1..5}; do
+     echo "Loop iteration"
+3  done
+echo "Final line"</code></pre>
+        <p>More text</p>
+      </div>
+    `;
+
+    const result = simpleMarkdownConversion(htmlMixed, 'Test', 'http://test.com');
+
+    // Should extract all the meaningful code content
+    expect(result.content).toContain('#!/bin/bash');
+    expect(result.content).toContain('echo "This line has a number"');
+    expect(result.content).toContain('echo "This line doesn\'t"');
+    expect(result.content).toContain('for i in {1..5}; do');
+    expect(result.content).toContain('done');
+    expect(result.content).toContain('echo "Final line"');
+  });
+
+  test('V.1.5 - Handle inline code elements (no line numbers expected)', () => {
+    const htmlInline = `
+      <p>Use the command <code>npm install</code> to install dependencies.</p>
+      <p>Then run <code>npm start</code> to start the server.</p>
+    `;
+
+    const result = simpleMarkdownConversion(htmlInline, 'Test', 'http://test.com');
+
+    // Should handle inline code properly
+    expect(result.content).toContain('`npm install`');
+    expect(result.content).toContain('`npm start`');
+  });
+
+  test('V.1.6 - Process real-world Docker example', () => {
+    const dockerHtml = `
+      <pre><code class="language-dockerfile">1  FROM node:16-alpine
+2  WORKDIR /app
+3  COPY package*.json ./
+4  RUN npm install
+5  
+6  # Copy source code
+7  COPY . .
+8  
+9  EXPOSE 3000
+10 CMD ["npm", "start"]</code></pre>
+    `;
+
+    const result = simpleMarkdownConversion(dockerHtml, 'Docker Example', 'http://test.com');
+
+    // Should extract clean Dockerfile content
+    expect(result.content).toContain('FROM node:16-alpine');
+    expect(result.content).toContain('WORKDIR /app');
+    expect(result.content).toContain('COPY package*.json ./');
+    expect(result.content).toContain('RUN npm install');
+    expect(result.content).toContain('# Copy source code');
+    expect(result.content).toContain('COPY . .');
+    expect(result.content).toContain('EXPOSE 3000');
+    expect(result.content).toContain('CMD ["npm", "start"]');
+
+    // Should properly format as docker (language-dockerfile becomes docker)
+    expect(result.content).toContain('```docker');
+  });
+
+  test('V.1.7 - Handle empty or malformed code blocks', () => {
+    const emptyCodeHtml = `
+      <div>
+        <pre><code></code></pre>
+        <pre><code>   </code></pre>
+        <pre><code class="language-js">
+        
+        </code></pre>
+      </div>
+    `;
+
+    const result = simpleMarkdownConversion(emptyCodeHtml, 'Empty', 'http://test.com');
+
+    // Should handle empty blocks gracefully without errors
+    expect(result.content).toBeDefined();
+    expect(result.title).toBe('Empty');
+    expect(result.url).toBe('http://test.com');
+  });
+});

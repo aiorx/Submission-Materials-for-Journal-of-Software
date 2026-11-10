@@ -1,0 +1,525 @@
+// Supported via standard GitHub programming aids
+// PDF Capture Service - Handles capturing and saving PDF files to GitHub repository
+// Extends the PrismWeave browser extension to support PDF document capture
+
+import { ISettings } from '../types/types.js';
+import { FileManager, IGitHubSettings } from './file-manager.js';
+import { createLogger } from './logger.js';
+import { SettingsManager } from './settings-manager.js';
+import SharedUtils from './shared-utils.js';
+
+const logger = createLogger('PDFCaptureService');
+
+/**
+ * Result interface for PDF capture operations
+ */
+export interface IPDFCaptureResult {
+  success: boolean;
+  message: string;
+  data?: {
+    filename: string;
+    filePath: string;
+    title?: string;
+    url?: string;
+    fileSize: number;
+    commitUrl?: string;
+    status?: string;
+    timestamp: string;
+  };
+  error?: string;
+}
+
+/**
+ * Options for PDF capture operations
+ */
+export interface IPDFCaptureOptions {
+  validateSettings?: boolean;
+  forceGitHubCommit?: boolean;
+  customFilename?: string;
+  folder?: string;
+}
+
+/**
+ * PDF metadata interface
+ */
+interface IPDFMetadata {
+  title: string;
+  url: string;
+  captureDate: string;
+  fileSize: number;
+  domain: string;
+  mimeType: string;
+}
+
+/**
+ * PDF Capture Service
+ *
+ * Handles the complete workflow for capturing PDF files from web pages
+ * and saving them directly to the GitHub repository without conversion.
+ */
+export class PDFCaptureService {
+  private static readonly PDF_FOLDER = 'documents/pdfs';
+  private static readonly MAX_PDF_SIZE = 25 * 1024 * 1024; // 25MB GitHub file limit
+  private static readonly SUPPORTED_MIME_TYPES = ['application/pdf', 'application/x-pdf'];
+
+  private fileManager: FileManager;
+  private settingsManager: SettingsManager;
+
+  constructor(settingsManager: SettingsManager) {
+    this.settingsManager = settingsManager;
+    this.fileManager = new FileManager();
+  }
+
+  /**
+   * Main entry point for PDF capture workflow
+   */
+  async capturePDF(
+    data?: Record<string, unknown>,
+    options: IPDFCaptureOptions = {}
+  ): Promise<IPDFCaptureResult> {
+    try {
+      logger.info('🚀 Starting PDF capture workflow');
+      logger.info('📊 PDF Capture Input:', {
+        hasData: !!data,
+        dataKeys: data ? Object.keys(data) : [],
+        options,
+      });
+
+      // Step 1: Validate settings if required
+      logger.info('⚙️ PDF Step 1: Validating settings...');
+      const settings = await this.validateAndGetSettings(options.validateSettings ?? false);
+      logger.info('✅ PDF Step 1 Complete: Settings validated');
+
+      // Step 2: Get current tab
+      logger.info('📱 PDF Step 2: Getting current tab...');
+      const activeTab = await this.getActiveTab();
+      logger.info('✅ PDF Step 2 Complete: Active tab retrieved:', {
+        url: activeTab.url,
+        title: activeTab.title,
+      });
+
+      // Step 3: Validate that this is a PDF page
+      logger.info('🔍 PDF Step 3: Validating PDF URL...');
+      if (!this.isPDFUrl(activeTab.url!)) {
+        throw new Error('Current page is not a PDF document');
+      }
+      logger.info('✅ PDF Step 3 Complete: URL confirmed as PDF');
+
+      // Step 4: Download the PDF content
+      logger.info('⬇️ PDF Step 4: Downloading PDF content...');
+      const pdfBlob = await this.downloadPDF(activeTab.url!);
+      logger.info(`✅ PDF Step 4 Complete: PDF downloaded: ${this.formatFileSize(pdfBlob.size)}`);
+
+      // Step 5: Validate PDF size
+      logger.info('📏 PDF Step 5: Validating PDF size...');
+      if (pdfBlob.size > PDFCaptureService.MAX_PDF_SIZE) {
+        throw new Error(
+          `PDF file too large (${this.formatFileSize(pdfBlob.size)}). Maximum allowed: ${this.formatFileSize(PDFCaptureService.MAX_PDF_SIZE)}`
+        );
+      }
+      logger.info('✅ PDF Step 5 Complete: Size validation passed');
+
+      // Step 6: Generate metadata and filename
+      logger.info('📋 PDF Step 6: Generating metadata and filename...');
+      const metadata = this.generatePDFMetadata(activeTab, pdfBlob.size);
+      const filename = options.customFilename || this.generatePDFFilename(metadata);
+      const folder = options.folder || PDFCaptureService.PDF_FOLDER;
+      const filePath = `${folder}/${filename}`;
+
+      logger.info('✅ PDF Step 6 Complete: Metadata generated:', {
+        filename,
+        filePath,
+        fileSize: this.formatFileSize(pdfBlob.size),
+      });
+
+      // Step 7: Convert blob to base64 for GitHub
+      logger.info('🔄 PDF Step 7: Converting PDF to base64...');
+      const pdfContent = await this.blobToBase64(pdfBlob);
+      logger.info(
+        `✅ PDF Step 7 Complete: Base64 conversion complete: ${pdfContent.length} characters`
+      );
+
+      // Step 8: Save to GitHub if enabled
+      logger.info('💾 PDF Step 8: Determining save strategy...');
+      const shouldCommit =
+        options.forceGitHubCommit ||
+        (settings.autoCommit && settings.githubToken && settings.githubRepo);
+
+      if (shouldCommit) {
+        logger.info('🌐 PDF Step 8a: Saving PDF to GitHub repository...');
+        const commitResult = await this.savePDFToGitHub(pdfContent, metadata, filePath, settings);
+
+        if (commitResult.success) {
+          logger.info('✅ PDF Step 8a Complete: PDF successfully saved to GitHub');
+          return this.createSuccessResult(metadata, filePath, {
+            message: 'PDF captured and saved to repository',
+            ...(commitResult.url && { commitUrl: commitResult.url }),
+          });
+        } else {
+          logger.warn(
+            '⚠️ PDF Step 8a Failed: GitHub save failed, falling back to local storage:',
+            commitResult.error
+          );
+        }
+      } else {
+        logger.info('⏭️ PDF Step 8: Skipping GitHub save (not configured)');
+      }
+
+      // Step 9: Fallback to local storage
+      logger.info('💽 PDF Step 9: Storing PDF locally for pending sync...');
+      await this.storePDFLocally(pdfContent, metadata, filePath);
+      logger.info('✅ PDF Step 9 Complete: PDF stored locally');
+
+      return this.createSuccessResult(metadata, filePath, {
+        message: 'PDF captured and stored locally (pending sync)',
+        status: 'pending_sync',
+      });
+    } catch (error) {
+      logger.error('PDF capture failed:', error);
+      return {
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error occurred',
+      };
+    }
+  }
+
+  /**
+   * Check if current tab contains a PDF document
+   */
+  async checkIfPDF(tabId?: number): Promise<{ isPDF: boolean; url?: string; title?: string }> {
+    try {
+      const tab = tabId ? await chrome.tabs.get(tabId) : await this.getActiveTab();
+
+      if (!tab.url) {
+        return { isPDF: false };
+      }
+
+      const isPDF = this.isPDFUrl(tab.url);
+
+      return {
+        isPDF,
+        url: tab.url,
+        ...(tab.title && { title: tab.title }),
+      };
+    } catch (error) {
+      logger.error('Error checking PDF status:', error);
+      return { isPDF: false };
+    }
+  }
+
+  // =================================================================
+  // PRIVATE METHODS
+  // =================================================================
+
+  private async validateAndGetSettings(shouldValidate: boolean): Promise<ISettings> {
+    const settings = await this.settingsManager.getSettings();
+
+    if (shouldValidate) {
+      const validation = this.settingsManager.validateSettings(settings);
+      if (!validation.isValid) {
+        throw new Error(`Invalid settings: ${validation.errors.join(', ')}`);
+      }
+    }
+
+    return settings as ISettings;
+  }
+
+  private async getActiveTab(): Promise<chrome.tabs.Tab> {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+
+    if (!tabs.length || !tabs[0].id) {
+      throw new Error('No active tab found');
+    }
+
+    return tabs[0];
+  }
+
+  private isPDFUrl(url: string): boolean {
+    try {
+      const urlObj = new URL(url);
+
+      // Check if URL ends with .pdf
+      if (urlObj.pathname.toLowerCase().endsWith('.pdf')) {
+        return true;
+      }
+
+      // Check for PDF viewer URLs (Google Chrome, Firefox, etc.)
+      if (url.includes('blob:') && url.includes('pdf')) {
+        return true;
+      }
+
+      // Check for common PDF viewer patterns
+      const pdfPatterns = [/\.pdf$/i, /\/pdf\//i, /viewer\.html.*\.pdf/i, /pdfjs/i];
+
+      return pdfPatterns.some(pattern => pattern.test(url));
+    } catch {
+      return false;
+    }
+  }
+
+  private async downloadPDF(url: string): Promise<Blob> {
+    logger.debug('📥 PDF Download: Starting download from URL:', url);
+
+    try {
+      logger.info('🌐 PDF Download Step 1: Initiating fetch request...');
+
+      // Add timeout to prevent hanging in Edge
+      const timeoutMs = 20000; // 20 seconds for PDF download
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        logger.warn('⏰ PDF Download: Fetch timeout reached, aborting request');
+        controller.abort();
+      }, timeoutMs);
+
+      logger.info('⏱️ PDF Download: Fetch timeout set to', timeoutMs / 1000, 'seconds');
+
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          Accept: 'application/pdf,*/*',
+          'User-Agent': navigator.userAgent,
+        },
+      });
+
+      clearTimeout(timeoutId);
+      logger.info('✅ PDF Download Step 1 Complete: Fetch response received');
+      logger.info('📊 PDF Download Response:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        headers: {
+          contentType: response.headers.get('content-type'),
+          contentLength: response.headers.get('content-length'),
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to download PDF: ${response.status} ${response.statusText}`);
+      }
+
+      logger.info('🔍 PDF Download Step 2: Validating content type...');
+      const contentType = response.headers.get('content-type');
+      if (
+        contentType &&
+        !PDFCaptureService.SUPPORTED_MIME_TYPES.some(type => contentType.includes(type))
+      ) {
+        logger.warn('⚠️ PDF Download: Content-Type may not be PDF:', contentType);
+      } else {
+        logger.info('✅ PDF Download Step 2 Complete: Content type valid:', contentType);
+      }
+
+      logger.info('📦 PDF Download Step 3: Converting response to blob...');
+      const blob = await response.blob();
+      logger.info('✅ PDF Download Step 3 Complete: Blob conversion complete');
+
+      logger.info('📏 PDF Download Step 4: Validating blob size...');
+      // Verify we got some content
+      if (blob.size === 0) {
+        throw new Error('Downloaded PDF is empty');
+      }
+
+      logger.info(
+        `🎉 PDF Download Complete: PDF downloaded successfully: ${this.formatFileSize(blob.size)}`
+      );
+      return blob;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        logger.error('❌ PDF Download Failed: Request timed out after 20 seconds');
+        throw new Error(
+          'PDF download timed out - this may be due to browser restrictions on PDF access'
+        );
+      }
+      logger.error('❌ PDF Download Failed: Error downloading PDF:', error);
+      throw new Error(`Failed to download PDF: ${(error as Error).message}`);
+    }
+  }
+
+  private generatePDFMetadata(tab: chrome.tabs.Tab, fileSize: number): IPDFMetadata {
+    const url = tab.url!;
+    const title = this.extractPDFTitle(tab.title || '', url);
+    const domain = this.extractDomain(url);
+
+    return {
+      title,
+      url,
+      captureDate: new Date().toISOString(),
+      fileSize,
+      domain,
+      mimeType: 'application/pdf',
+    };
+  }
+
+  private extractPDFTitle(tabTitle: string, url: string): string {
+    // Remove common PDF viewer prefixes
+    let title = tabTitle
+      .replace(/^PDF - /, '')
+      .replace(/\.pdf.*$/, '')
+      .replace(/ - Google Chrome$/, '')
+      .replace(/ - Mozilla Firefox$/, '')
+      .trim();
+
+    // If title is still not good, extract from URL
+    if (!title || title.length < 3 || title === 'PDF') {
+      try {
+        const urlObj = new URL(url);
+        const pathname = urlObj.pathname;
+        const filename = pathname.split('/').pop() || '';
+        title = filename.replace(/\.pdf$/i, '') || 'document';
+      } catch {
+        title = 'document';
+      }
+    }
+
+    return title;
+  }
+
+  private extractDomain(url: string): string {
+    try {
+      const urlObj = new URL(url);
+      return urlObj.hostname.replace(/^www\./, '');
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  private generatePDFFilename(metadata: IPDFMetadata): string {
+    try {
+      const date = SharedUtils.formatDateForFilename();
+      const domain = SharedUtils.sanitizeDomain(metadata.domain);
+      const title = SharedUtils.sanitizeForFilename(metadata.title, 50);
+
+      return `${date}-${domain}-${title}.pdf`;
+    } catch (error) {
+      logger.error('Error generating PDF filename:', error);
+      return `pdf-capture-${Date.now()}.pdf`;
+    }
+  }
+
+  private async blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as ArrayBuffer;
+        // Convert ArrayBuffer directly to base64
+        const bytes = new Uint8Array(result);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64 = btoa(binary);
+        resolve(base64);
+      };
+      reader.onerror = () => reject(new Error('Failed to convert PDF to base64'));
+      reader.readAsArrayBuffer(blob);
+    });
+  }
+
+  private async savePDFToGitHub(
+    base64Content: string,
+    metadata: IPDFMetadata,
+    filePath: string,
+    settings: ISettings
+  ) {
+    try {
+      const githubSettings: IGitHubSettings = {
+        token: settings.githubToken!,
+        repository: settings.githubRepo!,
+        branch: 'main',
+      };
+
+      // Create commit message
+      const commitMessage = this.generateCommitMessage(metadata, filePath);
+
+      // Use FileManager to commit the file
+      const result = await this.fileManager.commitToGitHub({
+        token: githubSettings.token,
+        repo: githubSettings.repository,
+        filePath,
+        content: base64Content,
+        message: commitMessage,
+        url: metadata.url,
+      });
+
+      return {
+        success: result.success,
+        url: result.data?.html_url,
+        error: result.error,
+      };
+    } catch (error) {
+      logger.error('Error saving PDF to GitHub:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  private async storePDFLocally(
+    base64Content: string,
+    metadata: IPDFMetadata,
+    filePath: string
+  ): Promise<void> {
+    const storageKey = `pending_pdf_${Date.now()}`;
+
+    await chrome.storage.local.set({
+      [storageKey]: {
+        type: 'pdf',
+        filePath,
+        content: base64Content,
+        title: metadata.title,
+        url: metadata.url,
+        fileSize: metadata.fileSize,
+        timestamp: metadata.captureDate,
+      },
+    });
+
+    logger.debug('PDF stored locally with key:', storageKey);
+  }
+
+  private generateCommitMessage(metadata: IPDFMetadata, filePath: string): string {
+    return `Add PDF document: ${metadata.title} (${metadata.domain})`;
+  }
+
+  private createSuccessResult(
+    metadata: IPDFMetadata,
+    filePath: string,
+    options: {
+      message: string;
+      commitUrl?: string;
+      status?: string;
+    }
+  ): IPDFCaptureResult {
+    const result: IPDFCaptureResult = {
+      success: true,
+      message: options.message,
+      data: {
+        filename: filePath.split('/').pop()!,
+        filePath,
+        title: metadata.title,
+        url: metadata.url,
+        fileSize: metadata.fileSize,
+        timestamp: metadata.captureDate,
+      },
+    };
+
+    if (options.commitUrl) {
+      result.data!.commitUrl = options.commitUrl;
+    }
+
+    if (options.status) {
+      result.data!.status = options.status;
+    }
+
+    return result;
+  }
+
+  private formatFileSize(bytes: number): string {
+    if (bytes === 0) return '0 Bytes';
+
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+}

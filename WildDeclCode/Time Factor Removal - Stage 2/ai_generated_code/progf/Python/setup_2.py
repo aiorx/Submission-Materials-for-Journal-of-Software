@@ -1,0 +1,33 @@
+# Template is Supported via standard programming aids
+from setuptools import setup, find_packages
+
+setup(
+    name="ngxctl",  # 你的项目名称
+    version="0.1.5",  # 版本号
+    packages=find_packages(),
+    include_package_data=True,
+    install_requires=[
+        "crossplane==0.5.8",
+        #"pandas==2.0.3",
+        "jsonpath-ng==1.6.1",
+        "tabulate==0.9.0",
+        "click==8.1.7",
+    ],
+    entry_points={
+        'console_scripts': [
+            'ngxctl=ngxctl.cli:cli',
+        ],
+    },
+    author="RangerWolf",
+    author_email="yang.rangerwolf@gmail.com",
+    description="A command-line tool for managing and analyzing Nginx.",
+    long_description=open('README.md', encoding="utf-8").read(),
+    long_description_content_type='text/markdown',
+    #url="https://github.com/yourusername/yourprojectname",  github not ready now~
+    classifiers=[
+        "Programming Language :: Python :: 3",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: OS Independent",
+    ],
+    python_requires='>=3.6',
+)

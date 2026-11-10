@@ -1,0 +1,49 @@
+//
+// For guidance on how to create filters see:
+// https://prototype-kit.service.gov.uk/docs/filters
+//
+
+const govukPrototypeKit = require('govuk-prototype-kit')
+const addFilter = govukPrototypeKit.views.addFilter
+
+// Add your filters here
+
+/**
+ * Convert month number to month name (1 → January, 2 → February, etc.)
+ * Used for formatting dates in GOV.UK style (e.g., "5 May 2025")
+ */
+addFilter('toMonth', function(month) {
+  if (!month) return '';
+  
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+  
+  // Adjust for zero-indexed array (month 1 = January = index 0)
+  const monthIndex = parseInt(month, 10) - 1;
+  
+  // Return month name if valid, otherwise return the original value
+  return (monthIndex >= 0 && monthIndex < 12) ? monthNames[monthIndex] : month;
+});
+
+/**
+ * Format numbers with commas for display according to GOV.UK guidance
+ * For numerals over 999 - insert a comma for clarity: 9,000
+ * Examples: 1000 → 1,000, 1000000 → 1,000,000
+ */
+addFilter('addCommas', function(number) {
+  if (!number && number !== 0) return '';
+  
+  // Convert to string and remove any existing commas
+  const numStr = number.toString().replace(/,/g, '');
+  
+  // Check if it's a valid number
+  if (isNaN(numStr)) return number;
+  
+  // Add commas for thousands
+  return numStr.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+});
+
+// Assisted using common GitHub development utilities
+

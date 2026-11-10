@@ -1,0 +1,1841 @@
+// Description: This file contains the extension logic for the VaporView extension
+// Portions of this code were Aided using common development resources 3.5 with a sequence of guided prompts
+
+import * as vscode from 'vscode';
+import * as path from 'path';
+import { on } from 'process';
+
+//import { getNonce } from 'util';
+
+interface VaporviewDocumentDelegate {
+  getViewerContext(): Promise<Uint8Array>;
+}
+
+class VaporviewDocument extends vscode.Disposable implements vscode.CustomDocument {
+
+  static async create(
+    uri: vscode.Uri,
+    backupId: string | undefined,
+    delegate: VaporviewDocumentDelegate,
+  ): Promise<VaporviewDocument | PromiseLike<VaporviewDocument>> {
+    //console.log("create()");
+    //console.log(uri.fsPath);
+
+    const netlistTreeDataProvider          = new NetlistTreeDataProvider();
+    const displayedSignalsTreeDataProvider = new DisplayedSignalsViewProvider();
+    const waveformDataSet                  = new WaveformTop();
+    const netlistIdTable                   = new Map<string, NetlistIdRef>();
+
+    // Read the VCD file using vscode.workspace.openTextDocument
+    // This doesn't like files over 50MB, so I will have to try something different
+    //const vcdDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(uri.fsPath));
+    //const vcdContent  = vcdDocument.getText();
+
+    // Todo: Bifurcate the code here to read the file using the file system API
+    // This way, the file can be read in chunks and the data can be parsed incrementally
+    const vcdDocument = await vscode.workspace.fs.readFile(uri);
+
+    // For long files, we show a notification with a progress bar
+    vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: "Loading VCD file",
+      cancellable: false
+    }, (progress) => {
+      progress.report({ increment: 1, message: "Opening VCD File"});
+
+      const vcdContent  = new TextDecoder().decode(vcdDocument);
+  
+      // Parse the VCD data for this specific file
+      parseVCDData(vcdContent, netlistTreeDataProvider, waveformDataSet, netlistIdTable, progress);
+      return Promise.resolve();
+    });
+
+    // Optionally, you can refresh the Netlist view
+    netlistTreeDataProvider.refresh();
+
+    return new VaporviewDocument(
+      uri,
+      waveformDataSet,
+      netlistTreeDataProvider,
+      displayedSignalsTreeDataProvider,
+      netlistIdTable,
+      delegate
+    );
+  }
+
+  private readonly _uri: vscode.Uri;
+  private _documentData: WaveformTop;
+  private _netlistTreeDataProvider: NetlistTreeDataProvider;
+  private _displayedSignalsTreeDataProvider: DisplayedSignalsViewProvider;
+  private _netlistIdTable: Map<string, NetlistIdRef>;
+  private readonly _delegate: VaporviewDocumentDelegate;
+
+  private constructor(
+    uri: vscode.Uri,
+    waveformData: WaveformTop,
+    _netlistTreeDataProvider: NetlistTreeDataProvider,
+    _displayedSignalsTreeDataProvider: DisplayedSignalsViewProvider,
+    _netlistIdTable: Map<string, NetlistIdRef>,
+    delegate: VaporviewDocumentDelegate
+  ) {
+    super(() => this.dispose());
+    this._uri = uri;
+    this._documentData = waveformData;
+    this._netlistTreeDataProvider = _netlistTreeDataProvider;
+    this._displayedSignalsTreeDataProvider = _displayedSignalsTreeDataProvider;
+    this._netlistIdTable = _netlistIdTable;
+    this._delegate = delegate;
+  }
+
+  public get uri() { return this._uri; }
+  public get documentData(): WaveformTop { return this._documentData; }
+  public get netlistTreeData(): NetlistTreeDataProvider { return this._netlistTreeDataProvider; }
+  public get displayedSignalsTreeData(): DisplayedSignalsViewProvider { return this._displayedSignalsTreeDataProvider; }
+  public get netlistIdTable(): Map<string, NetlistIdRef> { return this._netlistIdTable; }
+
+  public setNetlistIdTable(netlistId: NetlistId, dissplayedSignalViewRef: NetlistItem | undefined) {
+    let viewRef = this._netlistIdTable.get(netlistId);
+    if (viewRef === undefined) {return;}
+    viewRef.displayedItem = dissplayedSignalViewRef;
+    this._netlistIdTable.set(netlistId, viewRef);
+  }
+
+  //private readonly _onDidDispose = this._register(new vscode.EventEmitter<void>());
+  /**
+   * Fired when the document is disposed of.
+   */
+  //public readonly onDidDispose = this._onDidDispose.event;
+
+  /**
+   * Called by VS Code when there are no more references to the document.
+   *
+   * This happens when all editors for it have been closed.
+   */
+  dispose(): void {
+    //this._onDidDispose.fire();
+    this._documentData.dispose();
+  }
+}
+
+class WaveformViewerProvider implements vscode.CustomReadonlyEditorProvider<VaporviewDocument> {
+
+  private static newViewerId = 1;
+  private static readonly viewType = 'vaporview.waveformViewer';
+  private readonly webviews = new WebviewCollection();
+  private activeWebview: vscode.WebviewPanel | undefined;
+  private activeDocument: VaporviewDocument | undefined;
+  private lastActiveWebview: vscode.WebviewPanel | undefined;
+  private lastActiveDocument: VaporviewDocument | undefined;
+
+  public netlistTreeDataProvider: NetlistTreeDataProvider;
+  public netlistView: vscode.TreeView<NetlistItem>;
+  public displayedSignalsTreeDataProvider: DisplayedSignalsViewProvider;
+  public displayedSignalsView: vscode.TreeView<NetlistItem>;
+  public deltaTimeStatusBarItem: vscode.StatusBarItem;
+  public markerTimeStatusBarItem: vscode.StatusBarItem;
+  public selectedSignalStatusBarItem: vscode.StatusBarItem;
+
+  public netlistViewSelectedSignals: NetlistItem[] = [];
+  public displayedSignalsViewSelectedSignals: NetlistItem[] = [];
+
+  public webviewContext = {
+    markerTime: null,
+    altMarkerTime: null,
+    selectedSignal: null,
+    displayedSignals: [],
+    zoomRatio: 1,
+    scrollLeft: 0,
+    numberFormat: 16,
+    waveDromClock: {
+      netlistId: null,
+      edge: '1',
+    },
+  };
+
+  constructor(private readonly _context: vscode.ExtensionContext) {
+
+    // Create and register the Netlist and Displayed Signals view container
+    this.netlistTreeDataProvider = new NetlistTreeDataProvider();
+    this.netlistView = vscode.window.createTreeView('netlistContainer', {
+      treeDataProvider: this.netlistTreeDataProvider,
+      manageCheckboxStateManually: true,
+      canSelectMany: true,
+    });
+    this._context.subscriptions.push(this.netlistView);
+
+    this.displayedSignalsTreeDataProvider = new DisplayedSignalsViewProvider();
+    this.displayedSignalsView = vscode.window.createTreeView('displaylistContainer', {
+      treeDataProvider: this.displayedSignalsTreeDataProvider,
+      manageCheckboxStateManually: true,
+      canSelectMany: true,
+    });
+    this._context.subscriptions.push(this.displayedSignalsView);
+
+    // Create a status bar item for marker time and
+    this.deltaTimeStatusBarItem      = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    this.markerTimeStatusBarItem     = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+    this.selectedSignalStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
+  }
+
+  private getNameFromNetlistId(netlistId: string | null) {
+    if (!netlistId) {return null;}
+    const netlistData = this.activeDocument?.netlistIdTable.get(netlistId)?.netlistItem;
+    const modulePath  = netlistData?.modulePath;
+    const signalName  = netlistData?.name;
+    return modulePath + '.' + signalName;
+  }
+
+  public saveSettings() {
+    if (!this.activeDocument) {
+      vscode.window.showErrorMessage('No viewer is active. Please select the viewer you wish to save settings.');
+      return;
+    }
+
+    const saveData = {
+      extensionVersion: vscode.extensions.getExtension('Lramseyer.vaporview')?.packageJSON.version,
+      fileName: this.activeDocument.uri.fsPath,
+      displayedSignals: this.webviewContext.displayedSignals.map((n: string) => {return this.getNameFromNetlistId(n);}),
+      markerTime: this.webviewContext.markerTime,
+      altMarkerTime: this.webviewContext.altMarkerTime,
+      selectedSignal: this.getNameFromNetlistId(this.webviewContext.selectedSignal),
+      zoomRatio: this.webviewContext.zoomRatio,
+      scrollLeft: this.webviewContext.scrollLeft,
+      numberFormat: this.webviewContext.numberFormat,
+    };
+
+    const saveDataString = JSON.stringify(saveData, null, 2);
+
+    vscode.window.showSaveDialog({
+      saveLabel: 'Save settings',
+      filters: {JSON: ['json']}
+    }).then((uri) => {
+      if (uri) {
+        vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(saveDataString));
+      }
+    });
+  }
+
+  public async loadSettings() {
+
+    let version  = vscode.extensions.getExtension('Lramseyer.vaporview')?.packageJSON.version;
+    // show open file diaglog
+    let fileData = await new Promise<any>((resolve, reject) => {
+      vscode.window.showOpenDialog({
+        canSelectFiles: true,
+        canSelectFolders: false,
+        canSelectMany: false,
+        openLabel: 'Load settings',
+        filters: { JSON: ['json'] }
+      }).then((uri) => {
+        if (uri) {
+          vscode.workspace.fs.readFile(uri[0]).then((data) => {
+            const fileData = JSON.parse(new TextDecoder().decode(data));
+            resolve(fileData);
+          }, (error: any) => {
+            reject(error); // Reject if readFile fails
+          });
+        } else {
+          reject("No file selected"); // Reject if no file is selected
+        }
+      }, (error: any) => {
+        reject(error); // Reject if showOpenDialog fails
+      });
+    });
+
+    if (!fileData) {return;}
+
+    if (!this.activeDocument) {
+      vscode.window.showErrorMessage('No viewer is active. Please select the viewer you wish to load settings.');
+      return;
+    }
+
+    if (fileData.fileName && fileData.fileName !== this.activeDocument.uri.fsPath) {
+      vscode.window.showWarningMessage('The settings file may not match the active viewer');
+    }
+
+    let missingSignals: string[] = [];
+    let foundSignals: string[] = [];
+
+    if (fileData.displayedSignals) {
+      fileData.displayedSignals.forEach((signal: string) => {
+        let metaData = this.netlistTreeDataProvider.findTreeItem(signal);
+        if (metaData) {
+          foundSignals.push(metaData.netlistId);
+        } else {
+          missingSignals.push(signal);
+        }
+      });
+    }
+
+    foundSignals.forEach((netlistId: string) => {
+      if (!this.webviewContext.displayedSignals.includes(netlistId as never)) {
+        this.addSignalToDocument(netlistId, false);
+      }
+    });
+
+  }
+
+  //#region CustomEditorProvider
+  async openCustomDocument(
+    uri: vscode.Uri,
+    openContext: { backupId?: string },
+    _token: vscode.CancellationToken,
+  ): Promise<VaporviewDocument> {
+    //console.log("openCustomDocument()");
+    const document: VaporviewDocument = await VaporviewDocument.create(uri, openContext.backupId, {
+      getViewerContext: async () => {
+        const webviewsForDocument = Array.from(this.webviews.get(document.uri));
+        if (!webviewsForDocument.length) {
+          throw new Error('Could not find webview to save for');
+        }
+        const panel    = webviewsForDocument[0];
+        const response = await this.postMessageWithResponse<number[]>(panel, 'getContext', {});
+        return new Uint8Array(response);
+      }
+    });
+
+    this.netlistTreeDataProvider.setTreeData(document.netlistTreeData.getTreeData());
+    this.displayedSignalsTreeDataProvider.setTreeData(document.displayedSignalsTreeData.getTreeData());
+
+    return document;
+  }
+
+  formatTime = function(time: number, timeScale: number, timeUnit: string) {
+    const timeValue = time * timeScale;
+    return timeValue.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",") + ' ' + timeUnit;
+  };
+
+  is4State(value: string) {return value.match(/[xz]/i) ? true : false;};
+
+  parseValue(binaryString: string, numberFormat: number) {
+
+    let stringArray;
+    let xzMask = "";
+    let numericalData = binaryString;
+    let is4State: boolean = this.is4State(binaryString);
+
+    // If number format is binary
+    if (numberFormat === 2) {
+      return binaryString.replace(/\B(?=(\d{4})+(?!\d))/g, "_");
+    }
+  
+    // If number format is hexadecimal
+    if (numberFormat === 16) {
+      if (is4State) {
+        stringArray = binaryString.replace(/\B(?=(\d{4})+(?!\d))/g, "_").split("_");
+        return stringArray.map((chunk) => {
+          if (chunk.match(/[zZ]/)) {return "Z";}
+          if (chunk.match(/[xX]/)) {return "X";}
+          return parseInt(chunk, 2).toString(numberFormat);
+        }).join('').replace(/\B(?=(\d{4})+(?!\d))/g, "_");
+      } else {
+        stringArray = binaryString.replace(/\B(?=(\d{16})+(?!\d))/g, "_").split("_");
+        return stringArray.map((chunk) => {
+          let digits = Math.ceil(chunk.length / 4);
+          return parseInt(chunk, 2).toString(numberFormat).padStart(digits, '0');
+        }).join('_');
+      }
+    }
+  
+    // If number format is decimal
+    if (numberFormat === 10) {
+      if (is4State) {
+        numericalData = binaryString.replace(/[XZ]/i, "0");
+        xzMask = '|' +  binaryString.replace(/[01]/g, "0");
+      }
+      stringArray = numericalData.replace(/\B(?=(\d{32})+(?!\d))/g, "_").split("_");
+      return stringArray.map((chunk) => {return parseInt(chunk, 2).toString(numberFormat);}).join('_') + xzMask;
+    }
+  };
+
+  // Copies the waveform data between the markers as a WaveDrom JSON object
+  // This function is a bit cursed, but it works for now
+  copyWaveDrom() {
+    //console.log("copyWaveDrom");
+
+    // Maximum number of transitions to display
+    // Maybe I should make this a user setting in the future...
+    const MAX_TRANSITIONS = 32;
+    let result = '{"signal": [\n';
+
+    if (!this.activeWebview) {return;}
+    const w           = this.webviewContext;
+    const data        = this.activeDocument;
+    if (!data) {return;}
+
+    // Marker and alt marker need to be set
+    if (w.markerTime === null || w.altMarkerTime === null) {
+      vscode.window.showErrorMessage('Please use the marker and alt marker to set time window for waveform data.');
+      return;
+    }
+
+    const chunkTime   = data.documentData.metadata.chunkTime;
+    const timeWindow  = [w.markerTime, w.altMarkerTime].sort((a, b) => a - b);
+    const chunkWindow = [Math.floor(timeWindow[0] / chunkTime), Math.ceil(timeWindow[1] / chunkTime)];
+    let allTransitions: any[] = [];
+
+    // Populate the waveDrom names with the selected signals
+    let waveDromData: any = {};
+    w.displayedSignals.forEach((netlistId: string) => {
+      const netlistItem = data.netlistIdTable.get(netlistId);
+      if (!netlistItem) {return;}
+
+      const signalName = netlistItem.netlistItem.modulePath + "." + netlistItem.netlistItem.name;
+      const signalId   = netlistItem.netlistItem.signalId;
+      const signalData = data.documentData.netlistElements.get(signalId);
+
+      if (!signalData) {return;}
+
+      const transitionData    = signalData?.transitionData;
+      const chunkStart        = signalData?.chunkStart;
+      const signalDataChunk   = transitionData.slice(Math.max(0, chunkStart[chunkWindow[0]] - 1), chunkStart[chunkWindow[1]]);
+      let   initialState: any = "x";
+      let   json: any         = {name: signalName, wave: ""};
+      let   signalDataTrimmed: TransitionData[] = [];
+      if (signalData.signalWidth > 1) {json.data = [];}
+
+      signalDataChunk.forEach((transition: TransitionData) => {
+        if (transition[0] <= timeWindow[0]) {initialState = transition[1];}
+        if (transition[0] >= timeWindow[0] && transition[0] <= timeWindow[1]) {signalDataTrimmed.push(transition);}
+      });
+
+      waveDromData[netlistId] = {json: json, signalData: signalDataTrimmed, signalWidth: signalData.signalWidth, initialState: initialState};
+      const taggedTransitions = signalDataTrimmed.map(t => [t[0], t[1], netlistId]);
+      allTransitions = allTransitions.concat(taggedTransitions);
+    });
+
+    let currentTime: number = timeWindow[0];
+    let transitionCount = 0;
+    const numberFormat  = w.numberFormat;
+
+    if (w.waveDromClock.netlistId === null) {
+
+      allTransitions = allTransitions.sort((a, b) => a[0] - b[0]);
+
+      for (let index = 0; index < allTransitions.length; index++) {
+        let time     = allTransitions[index][0];
+        let state    = allTransitions[index][1];
+        let netlistId = allTransitions[index][2];
+        if (currentTime >= timeWindow[1] || transitionCount >= MAX_TRANSITIONS) {break;}
+        if (time !== currentTime) {
+          currentTime = time;
+          transitionCount++;
+          w.displayedSignals.forEach((n) => {
+            let signal = waveDromData[n];
+            if (signal.initialState === null) {signal.json.wave += '.';}
+            else {
+              if (signal.signalWidth > 1) {
+                signal.json.wave += this.is4State(signal.initialState) ? "9" : "7";
+                signal.json.data.push(this.parseValue(signal.initialState, numberFormat));
+              } else {
+                signal.json.wave += signal.initialState;
+              }
+            }
+            signal.initialState = null;
+          });
+        }
+        waveDromData[netlistId].initialState = state;
+      }
+    } else {
+      let clockEdges = waveDromData[w.waveDromClock.netlistId].signalData.filter((t: TransitionData) => t[1] === w.waveDromClock.edge);
+      let edge       = w.waveDromClock.edge === '1' ? "p" : "n";
+      let nextEdge: any = null;
+      for (let index = 0; index < clockEdges.length; index++) {
+        let currentTime = clockEdges[index][0];
+        if (index === clockEdges.length - 1) {nextEdge = timeWindow[1];}
+        else {nextEdge    = clockEdges[index + 1][0];}
+        if (currentTime >= timeWindow[1] || transitionCount >= MAX_TRANSITIONS) {break;}
+        w.displayedSignals.forEach((n) => {
+          let signal = waveDromData[n];
+          let signalData = signal.signalData;
+          if (n === w.waveDromClock.netlistId) {signal.json.wave += edge;}
+          else {
+            let transition = signalData.find((t: TransitionData) => t[0] >= currentTime && t[0] < nextEdge);
+            if (!transition && index === 0) {transition = [currentTime, signal.initialState];}
+            if (!transition && index > 0) {
+              signal.json.wave += '.';
+            } else {
+              if (signal.signalWidth > 1) {
+                signal.json.wave += this.is4State(transition[1]) ? "9" : "7";
+                signal.json.data.push(this.parseValue(transition[1], numberFormat));
+              } else {
+                signal.json.wave += transition[1];
+              }
+            }
+            signal.initialState = undefined;
+          }
+        });
+        transitionCount++;
+      }
+    }
+
+    //console.log(waveDromData);
+
+    if (transitionCount >= MAX_TRANSITIONS) {
+      vscode.window.showWarningMessage('The number of transitions exceeds the maximum limit of ' + MAX_TRANSITIONS);
+    }
+
+    // write the waveDrom JSON to the clipboard
+    w.displayedSignals.forEach((netlistId) => {
+      const signalData = waveDromData[netlistId].json;
+      result += '  ' + JSON.stringify(signalData) + ',\n';
+    });
+    vscode.env.clipboard.writeText(result + ']}');
+
+    vscode.window.showInformationMessage('WaveDrom JSON copied to clipboard.');
+  };
+
+  scaleFromUnits(unit: string | undefined) {
+    switch (unit) {
+      case 'fs': return 1e-15;
+      case 'ps': return 1e-12;
+      case 'ns': return 1e-9;
+      case 'us': return 1e-6;
+      case 'µs': return 1e-6;
+      case 'ms': return 1e-3;
+      case 's':  return 1;
+      case 'ks': return 1000;
+      default: return 1;
+    }
+  }
+
+  setMarkerAtTimeWithUnits(time: number, unit: string) {
+
+    if (!this.lastActiveDocument) {
+      //console.log('No active document');
+      return;
+    }
+
+    const timeScale   = this.lastActiveDocument.documentData.metadata.timeScale;
+    const timeUnit    = this.scaleFromUnits(this.lastActiveDocument.documentData.metadata.timeUnit);
+
+    if (!timeScale || !timeUnit) {return;}
+
+    const scaleFactor = this.scaleFromUnits(unit) / (timeUnit * timeScale);
+
+    this.setMarkerAtTime(Math.round(time * scaleFactor));
+  };
+
+  setMarkerAtTime(time: number) {
+
+    if (!this.lastActiveWebview) {return;}
+    if (!this.lastActiveDocument) {return;}
+
+    // Check to see that the time is not out of bounds
+    const chunkCount = this.lastActiveDocument.documentData.metadata.chunkCount;
+    const chunkTime  = this.lastActiveDocument.documentData.metadata.chunkTime;
+    if (!chunkCount || !chunkTime) {return;}
+    if (time < 0 || time > (chunkCount * chunkTime)) {return;}
+
+    this.lastActiveWebview.webview.postMessage({command: 'setMarker', time: time});
+  }
+
+  updateStatusBarItems(document: VaporviewDocument) {
+    this.deltaTimeStatusBarItem.hide();
+    this.markerTimeStatusBarItem.hide();
+    this.selectedSignalStatusBarItem.hide();
+    const w = this.webviewContext;
+
+    if (!document) {return;}
+
+    if (w.markerTime !== null) {
+      const timeScale = document.documentData.metadata.timeScale;
+      const timeUnit  = document.documentData.metadata.timeUnit;
+      this.markerTimeStatusBarItem.text = 'time: ' + this.formatTime(w.markerTime, timeScale, timeUnit);
+      this.markerTimeStatusBarItem.show();
+      if (w.altMarkerTime !== null) {
+        const deltaT = w.markerTime - w.altMarkerTime;
+        this.deltaTimeStatusBarItem.text = 'Δt: ' + this.formatTime(deltaT, timeScale, timeUnit);
+        this.deltaTimeStatusBarItem.show();
+      } else {
+        this.deltaTimeStatusBarItem.hide();
+      }
+    } else {
+      this.markerTimeStatusBarItem.hide();
+    }
+
+    if (w.selectedSignal !== null) {
+      const signalName = document.netlistIdTable.get(w.selectedSignal)?.netlistItem.name;
+      this.selectedSignalStatusBarItem.text = 'Selected signal: ' + signalName;
+      this.selectedSignalStatusBarItem.show();
+    } else {
+      this.selectedSignalStatusBarItem.hide();
+    }
+  };
+
+  async resolveCustomEditor(
+    document: VaporviewDocument,
+    webviewPanel: vscode.WebviewPanel,
+    _token: vscode.CancellationToken
+  ): Promise<void> {
+
+    webviewPanel.onDidDispose(() => {
+      if (this.activeWebview === webviewPanel) {
+        this.netlistTreeDataProvider.setTreeData([]);
+        this.displayedSignalsTreeDataProvider.setTreeData([]);
+        this.webviewContext = {
+          markerTime: null,
+          altMarkerTime: null,
+          selectedSignal: null,
+          displayedSignals: [],
+          zoomRatio: 1,
+          scrollLeft: 0,
+          numberFormat: 16,
+          waveDromClock: {
+            netlistId: null,
+            edge: '1',
+          },
+        };
+      }
+      if (this.lastActiveWebview === webviewPanel) {
+        this.lastActiveWebview = undefined;
+        this.lastActiveDocument = undefined;
+      }
+    });
+
+    // Wait for the webview to be properly ready before we init
+    webviewPanel.webview.onDidReceiveMessage(e => {
+      //console.log(e);
+      //console.log(document.uri);
+
+      if (e.type === 'ready') {
+        if (document.uri.scheme === 'untitled') {
+          //console.log("untitled scheme");
+        }
+        webviewPanel.webview.postMessage({
+          command: 'create-ruler',
+          waveformDataSet: document.documentData.metadata,
+        });
+      }
+      switch (e.command) {
+        case 'init': {
+          // Webview is initialized, send the 'init' message
+          break;
+        }
+        case 'setTime': {
+          this.webviewContext.markerTime    = e.markerTime;
+          this.webviewContext.altMarkerTime = e.altMarkerTime;
+
+          this.updateStatusBarItems(document);
+          break;
+        }
+        case 'setSelectedSignal': {
+          this.webviewContext.selectedSignal = e.netlistId;
+          
+          this.updateStatusBarItems(document);
+          break;
+        }
+        case 'contextUpdate' : {
+          this.webviewContext.markerTime       = e.markerTime;
+          this.webviewContext.altMarkerTime    = e.altMarkerTime;
+          this.webviewContext.selectedSignal   = e.selectedSignal;
+          this.webviewContext.displayedSignals = e.displayedSignals;
+          this.webviewContext.zoomRatio        = e.zoomRatio;
+          this.webviewContext.scrollLeft       = e.scrollLeft;
+          this.webviewContext.numberFormat     = e.numberFormat;
+
+          this.updateStatusBarItems(document);
+          break;
+        }
+        case 'close-webview' : {
+          //console.log("close-webview");
+          // Close the webview
+          webviewPanel.dispose();
+          break;
+        }
+      }
+      //this.onMessage(document, e);
+      switch (e.type) {
+        case 'response': {
+          const callback = this._callbacks.get(e.requestId);
+          callback?.(e.body);
+          return;
+        }
+      }
+    });
+
+    webviewPanel.onDidChangeViewState(e => {
+      //console.log("onDidChangeViewState()");
+      //console.log(vscode.window.activeTextEditor?.document);
+      //console.log(e);
+
+      this.netlistViewSelectedSignals = [];
+      this.displayedSignalsViewSelectedSignals = [];
+
+      if (e.webviewPanel.active) {
+        this.activeWebview  = webviewPanel;
+        this.activeDocument = document;
+        this.lastActiveWebview = webviewPanel;
+        this.lastActiveDocument = document;
+        this.netlistTreeDataProvider.setTreeData(this.activeDocument.netlistTreeData.getTreeData());
+        this.displayedSignalsTreeDataProvider.setTreeData(this.activeDocument.displayedSignalsTreeData.getTreeData());
+        webviewPanel.webview.postMessage({command: 'getSelectionContext'});
+        this.deltaTimeStatusBarItem.show();
+        this.markerTimeStatusBarItem.show();
+        this.selectedSignalStatusBarItem.show();
+      } else if (!e.webviewPanel.active && e.webviewPanel === this.activeWebview) {
+        this.activeWebview  = undefined;
+        this.activeDocument = undefined;
+        this.netlistTreeDataProvider.hide();
+        this.displayedSignalsTreeDataProvider.hide();
+        this.deltaTimeStatusBarItem.hide();
+        this.markerTimeStatusBarItem.hide();
+        this.selectedSignalStatusBarItem.hide();
+      }
+    });
+
+    // Subscribe to the expand/collapse events - For some reason we need to do
+    // this because the collapsible state is not preserved when the tree view is refreshed
+    this.netlistView.onDidExpandElement((element) => {
+      if (!webviewPanel.active) {return;}
+      if (element.element.collapsibleState === vscode.TreeItemCollapsibleState.None) {return;}
+      element.element.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
+    });
+
+    this.netlistView.onDidCollapseElement((element) => {
+      if (!webviewPanel.active) {return;}
+      if (element.element.collapsibleState === vscode.TreeItemCollapsibleState.None) {return;}
+      element.element.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
+    });
+
+    // Subscribe to the checkbox state change event
+    this.netlistView.onDidChangeCheckboxState((changedItem) => {
+
+      //console.log(this.netlistView);
+
+      if (!webviewPanel.active) {return;}
+
+      const metadata   = changedItem.items[0][0];
+      const signalId   = metadata.signalId;
+      const signalData = document.documentData.netlistElements.get(signalId);
+      const netlistId  = metadata.netlistId;
+
+      // If the item is a parent node, uncheck it
+      if (metadata.collapsibleState !== vscode.TreeItemCollapsibleState.None) {
+        this.netlistTreeDataProvider.setCheckboxState(metadata, vscode.TreeItemCheckboxState.Unchecked);
+        return;
+      }
+
+      if (metadata.checkboxState === vscode.TreeItemCheckboxState.Checked) {
+        this.renderSignal(document, webviewPanel, signalId, netlistId, signalData);
+        this.displayedSignalsTreeDataProvider.addSignalToTreeData(metadata);
+        document.setNetlistIdTable(netlistId, metadata);
+      } else if (metadata.checkboxState === vscode.TreeItemCheckboxState.Unchecked) {
+        this.removeSignalFromWebview(webviewPanel, netlistId);
+        this.displayedSignalsTreeDataProvider.removeSignalFromTreeData(metadata);
+        document.setNetlistIdTable(netlistId, undefined);
+      }
+    });
+
+    this.displayedSignalsView.onDidChangeCheckboxState((changedItem) => {
+      if (!webviewPanel.active) {return;}
+      const metadata   = changedItem.items[0][0];
+      const signalId   = metadata.signalId;
+      const netlistId  = metadata.netlistId;
+
+      if (metadata.checkboxState === vscode.TreeItemCheckboxState.Unchecked) {
+        this.netlistTreeDataProvider.setCheckboxState(metadata, vscode.TreeItemCheckboxState.Unchecked);
+        this.displayedSignalsTreeDataProvider.removeSignalFromTreeData(metadata);
+        this.removeSignalFromWebview(webviewPanel, netlistId);
+        document.setNetlistIdTable(netlistId, undefined);
+      }
+    });
+
+    // onDidChangeSelection() event returns readonly elements
+    // so we need to copy the selected elements to a new array
+    // Six one way, half a dozen the other. One is just more concise...
+    this.netlistView.onDidChangeSelection((e) => {
+      this.netlistViewSelectedSignals = [];
+      e.selection.forEach((element) => {
+        this.netlistViewSelectedSignals.push(element);
+      });
+    });
+
+    this.displayedSignalsView.onDidChangeSelection((e) => {
+      this.displayedSignalsViewSelectedSignals = [];
+      e.selection.forEach((element) => {
+        this.displayedSignalsViewSelectedSignals.push(element);
+      });
+    });
+
+    //console.log("resolveCustomEditor()");
+    // Add the webview to our internal set of active webviews
+    this.webviews.add(document.uri, webviewPanel);
+    this.activeWebview  = webviewPanel;
+    this.activeDocument = document;
+    this.lastActiveWebview = webviewPanel;
+    this.lastActiveDocument = document;
+
+    // Setup initial content for the webview
+    webviewPanel.webview.options = {
+      enableScripts: true,
+    };
+    webviewPanel.webview.html = this.getWebViewContent(webviewPanel.webview);
+
+    this.netlistTreeDataProvider.setTreeData(this.activeDocument.netlistTreeData.getTreeData());
+    this.displayedSignalsTreeDataProvider.setTreeData(this.activeDocument.displayedSignalsTreeData.getTreeData());
+  }
+
+  private _requestId = 1;
+  private readonly _callbacks = new Map<number, (response: any) => void>();
+
+  private postMessageWithResponse<R = unknown>(panel: vscode.WebviewPanel, type: string, body: any): Promise<R> {
+    const requestId = this._requestId++;
+    const p = new Promise<R>(resolve => this._callbacks.set(requestId, resolve));
+    panel.webview.postMessage({ type, requestId, body });
+    return p;
+  }
+
+  //private onMessage(document: VaporviewDocument, message: any) {
+  //  switch (message.type) {
+  //    case 'response':
+  //      {
+  //        const callback = this._callbacks.get(message.requestId);
+  //        callback?.(message.body);
+  //        return;
+  //      }
+  //  }
+  //}
+
+  public removeSignalFromDocument(netlistId: NetlistId) {
+
+    if (!this.activeWebview) {return;}
+    if (!this.activeDocument) {return;}
+    if (!this.activeWebview.active) {return;}
+
+    const panel    = this.activeWebview;
+    const document = this.activeDocument;
+
+    this.removeSignalFromWebview(panel, netlistId);
+
+    const metadataELements = document.netlistIdTable.get(netlistId);
+    if (metadataELements) {
+      const netlistItem = metadataELements.netlistItem;
+      this.netlistTreeDataProvider.setCheckboxState(netlistItem, vscode.TreeItemCheckboxState.Unchecked);
+      const displayedItem = metadataELements.displayedItem;
+      if (displayedItem) {
+        this.displayedSignalsTreeDataProvider.removeSignalFromTreeData(displayedItem);
+        document.setNetlistIdTable(netlistId, undefined);
+      }
+    }
+  }
+
+  public addSignalByNameToDocument(signalName: string) {
+    const metadata = this.lastActiveDocument?.netlistTreeData.findTreeItem(signalName);
+  
+    if (!metadata) {
+      //console.log('Signal not found');
+      return;
+    }
+
+    //console.log('found signal ' + signalName);
+
+    const netlistId   = metadata.netlistId;
+    const isDisplayed = this.webviewContext.displayedSignals.includes(netlistId as never);
+    if (isDisplayed) {
+      //console.log('Signal already displayed');
+      if (this.lastActiveWebview) {
+        this.lastActiveWebview.webview.postMessage({
+          command: 'setSelectedSignal',
+          netlistId: netlistId
+        });
+      }
+    } else {
+      //console.log('Adding signal to document');
+      this.addSignalToDocument(metadata.netlistId, true);
+    }
+  }
+
+  public addSignalToDocument(netlistId: NetlistId, addToLastActive: boolean) {
+
+    let panel: vscode.WebviewPanel;
+    let document: VaporviewDocument;
+
+    if (!addToLastActive) {
+      if (!this.activeWebview) {return;}
+      if (!this.activeDocument) {return;}
+      if (!this.activeWebview.active) {return;}
+
+      panel    = this.activeWebview;
+      document = this.activeDocument;
+    } else {
+      if (!this.lastActiveWebview) {return;}
+      if (!this.lastActiveDocument) {return;}
+
+      panel    = this.lastActiveWebview;
+      document = this.lastActiveDocument;
+    }
+
+    const metadata = document.netlistIdTable.get(netlistId)?.netlistItem;
+    if (!metadata) {return;}
+
+    const signalId   = metadata.signalId;
+    const signalData = document.documentData.netlistElements.get(signalId);
+
+    document.netlistTreeData.setCheckboxState(metadata, vscode.TreeItemCheckboxState.Checked);
+    this.renderSignal(document, panel, signalId, netlistId, signalData);
+    document.displayedSignalsTreeData.addSignalToTreeData(metadata);
+    document.setNetlistIdTable(netlistId, metadata);
+  };
+
+  private renderSignal(document: VaporviewDocument, panel: vscode.WebviewPanel, signalId: SignalId, netlistId: NetlistId, signalData: SignalWaveform | undefined) {
+    // Render the signal with the provided ID
+    const netlistIdTable = document.netlistIdTable;
+    if (!netlistIdTable) {return;}
+    const name           = netlistIdTable.get(netlistId)?.netlistItem.name;
+    const modulePath     = netlistIdTable.get(netlistId)?.netlistItem.modulePath;
+    panel.webview.postMessage({ 
+      command: 'render-signal',
+      netlistId: netlistId,
+      signalId: signalId,
+      waveformData: signalData,
+      signalName: name,
+      modulePath: modulePath
+   });
+  }
+
+  private removeSignalFromWebview(panel: vscode.WebviewPanel, netlistId: NetlistId) {
+    // Render the signal with the provided ID
+    panel.webview.postMessage({ 
+      command: 'remove-signal',
+      netlistId: netlistId
+   });
+  }
+
+  public filterAddSignalsInNetlist(netlistElements: NetlistItem[]) {
+
+    const elementList = netlistElements.filter((element) => {
+      return element.checkboxState === vscode.TreeItemCheckboxState.Unchecked && element.collapsibleState === vscode.TreeItemCollapsibleState.None;
+    });
+
+    if (elementList.length > 10) {
+      // show warning message
+      vscode.window.showWarningMessage('You are about to add a large number of signals to the waveform viewer. This may cause performance issues. Do you want to continue?', 'Yes', 'No').then((response) => {
+        if (response === 'Yes') {
+          this.renerSignalList(elementList);
+        } 
+      });
+    } else {
+      this.renerSignalList(elementList);
+    }
+  }
+
+  public renerSignalList(netlistElements: NetlistItem[]) {
+    if (!this.activeWebview) {return;}
+    if (!this.activeDocument) {return;}
+    if (!this.activeWebview.active) {return;}
+
+    const panel       = this.activeWebview;
+    const document    = this.activeDocument;
+
+    netlistElements.forEach((element) => {
+      const metadata   = element;
+      const signalId   = metadata.signalId;
+      const netlistId  = metadata.netlistId;
+      const signalData = document.documentData.netlistElements.get(signalId);
+      this.netlistTreeDataProvider.setCheckboxState(metadata, vscode.TreeItemCheckboxState.Checked);
+      this.renderSignal(document, panel, signalId, netlistId, signalData);
+      this.displayedSignalsTreeDataProvider.addSignalToTreeData(metadata);
+      document.setNetlistIdTable(netlistId, metadata);
+    });
+  }
+
+  public removeSignalList(signalList: NetlistItem[]) {
+    if (!this.activeWebview) {return;}
+    if (!this.activeDocument) {return;}
+    if (!this.activeWebview.active) {return;}
+
+    signalList.forEach((element) => {
+      const metadata  = element;
+      const netlistId = metadata.netlistId;
+      if (element.checkboxState === vscode.TreeItemCheckboxState.Checked) {
+        this.removeSignalFromDocument(netlistId);
+      }
+    });
+  }
+
+  public removeSelectedSignalsFromDocument(view: string) {
+
+    if (view === 'netlist') {
+      this.removeSignalList(this.netlistViewSelectedSignals);
+    } else if (view === 'displayedSignals') {
+      this.removeSignalList(this.displayedSignalsViewSelectedSignals);
+    }
+  }
+
+  // To do: implement nonce with this HTML:
+  //<script nonce="${nonce}" src="${scriptUri}"></script>
+
+  private getWebViewContent(webview: vscode.Webview): string {
+
+    const extensionUri = this._context.extensionUri;
+
+    const webAssets = {
+      diamondUri:   webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'diamond.svg')),
+      svgIconsUri:  webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'icons.svg')),
+      jsFileUri:    webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'vaporview.js')),
+      cssFileUri:   webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'style.css')),
+      codiconsUri:  webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', '@vscode', 'codicons', 'dist', 'codicon.css')),
+    };
+
+    // Generate the HTML content
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>VaporView - Waveform Viewer</title>
+        <link rel="stylesheet" href="${webAssets.codiconsUri}"/>
+        <link rel="stylesheet" href="${webAssets.cssFileUri}">
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link href="${webAssets.diamondUri}" rel="diamond.svg" type="image/svg+xml">
+        <link href="${webAssets.svgIconsUri}" rel="icons.svg" type="image/svg+xml">
+      </head>
+      <body>
+        <div id="vaporview-top">
+          <div id="control-bar">
+            <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+              <defs>
+                <symbol id="binary-edge" viewBox="0 0 16 16">
+                  <path d="M 2 14 L 2 14 L 8 14 L 8 3 C 8 1 8 1 10 1 L 14 1 L 14 2 L 9 2 L 9 13 C 9 15 9 15 7 15 L 2 15 L 2 14"/>
+                </symbol>
+                <symbol id="bus-edge" viewBox="0 0 16 16">
+                  <path d="M 2 1 L 6 1 L 8 6 L 10 1 L 14 1 L 14 2 L 10.663 2 L 8.562 7.5 L 10.663 14 L 14 14 L 14 15 L 10 15 L 8 9 L 6 15 L 2 15 L 2 14 L 5.337 14 L 7.437 7.5 L 5.337 2 L 2 2 L 2 1"/>
+                </symbol>
+                <symbol id="arrow" viewBox="0 0 16 16">
+                  <path d="M 1 7 L 1 8 L 6 8 L 4 10 L 4.707 10.707 L 7.914 7.5 L 4.707 4.293 L 4 5 L 6 7 L 6 7 L 1 7"/>
+                </symbol>
+                <symbol id="back-arrow" viewBox="0 0 16 16">
+                  <use href="#arrow" transform="scale(-1, 1) translate(-16, 0)"/>
+                </symbol>
+                <symbol id="next-posedge" viewBox="0 0 16 16">
+                  <use href="#arrow"/>
+                  <use href="#binary-edge" transform="translate(3, 0)"/>
+                </symbol>
+                <symbol id="next-negedge" viewBox="0 0 16 16">
+                  <use href="#arrow"/>
+                  <use href="#binary-edge" transform="translate(3, 16) scale(1, -1)"/>
+                </symbol>
+                <symbol id="next-edge" viewBox="0 0 16 16">
+                  <use href="#arrow"/>
+                  <use href="#bus-edge" transform="translate(3, 0)"/>
+                </symbol>
+                <symbol id="previous-posedge" viewBox="0 0 16 16">
+                  <use href="#back-arrow"/>
+                  <use href="#binary-edge" transform="translate(-3, 0)"/>
+                </symbol>
+                <symbol id="previous-negedge" viewBox="0 0 16 16">
+                  <use href="#back-arrow"/>
+                  <use href="#binary-edge" transform="translate(-3, 16) scale(1, -1)"/>
+                </symbol>
+                <symbol id="previous-edge" viewBox="0 0 16 16">
+                  <use href="#back-arrow"/>
+                  <use href="#bus-edge" transform="translate(-3, 0)"/>
+                </symbol>
+                <symbol id="time-equals" viewBox="0 0 16 16">
+                  <text x="8" y="8" class="icon-text">t=</text>
+                </symbol>
+                <symbol id="search-hex" viewBox="0 0 16 16">
+                  <text x="8" y="8" class="icon-text">hex</text>
+                </symbol>
+                <symbol id="search-binary" viewBox="0 0 16 16">
+                  <text x="8" y="8" class="icon-text">bin</text>
+                </symbol>
+                <symbol id="search-decimal" viewBox="0 0 16 16">
+                  <text x="8" y="8" class="icon-text">dec</text>
+                </symbol>
+                <symbol id="search-enum" viewBox="0 0 16 16">
+                  <text x="8" y="8" class="icon-text">Abc</text>
+                </symbol>
+                <symbol id="touchpad" viewBox="0 0 16 16">
+                  <path d="M 1 2 L 1 10 C 1 11 2 11 2 11 L 3 11 L 3 10 L 2 10 L 2 2 L 14 2 L 14 10 L 12 10 L 12 11 L 14 11 C 14 11 15 11 15 10 L 15 2 C 15 2 15 1 14 1 L 2 1 C 1 1 1 2 1 2 M 4 14 L 5 14 L 5 11 C 5 10 5 9 6 9 C 7 9 7 10 7 11 L 7 14 L 8 14 L 8 9 C 8 8 8 7 9 7 C 10 7 10 8 10 9 L 10 14 L 11 14 L 11 9 C 11 7 10.5 6 9 6 C 7.5 6 7 7 7 8 L 7 8.5 C 6.917 8.261 6.671 8.006 6 8 C 4.5 8 4 9 4 11 L 4 14"/>
+                </symbol>
+              </defs>
+            </svg>
+            <div class="control-bar-group">
+              <div class="control-bar-button" title="Zoom Out (Ctrl + scroll down)" id="zoom-out-button">
+                <div class='codicon codicon-zoom-out' style="font-size:20px"></div>
+              </div>
+              <div class="control-bar-button" title="Zoom In (Ctrl + scroll up)" id="zoom-in-button">
+                <div class='codicon codicon-zoom-in' style="font-size:20px"></div>
+              </div>
+            </div>
+            <div class="control-bar-group">
+              <div class="control-bar-button" title="Go To Previous Negative Edge Transition" id="previous-negedge-button">
+                <svg class="custom-icon" viewBox="0 0 16 16"><use href="#previous-negedge"/></svg>
+              </div>
+              <div class="control-bar-button" title="Go To Previous Positive Edge Transition" id="previous-posedge-button">
+                <svg class="custom-icon" viewBox="0 0 16 16"><use href="#previous-posedge"/></svg>
+              </div>
+              <div class="control-bar-button" title="Go To Previous Transition (Ctrl + &#8678;)" id="previous-edge-button">
+                <svg class="custom-icon" viewBox="0 0 16 16"><use href="#previous-edge"/></svg>
+              </div>
+              <div class="control-bar-button" title="Go To Next Transition (Ctrl + &#8680;)" id="next-edge-button">
+                <svg class="custom-icon" viewBox="0 0 16 16"><use href="#next-edge"/></svg>
+              </div>
+              <div class="control-bar-button" title="Go To Next Positive Edge Transition" id="next-posedge-button">
+                <svg class="custom-icon" viewBox="0 0 16 16"><use href="#next-posedge"/></svg>
+              </div>
+              <div class="control-bar-button" title="Go To Next Negative Edge Transition" id="next-negedge-button">
+                <svg class="custom-icon" viewBox="0 0 16 16"><use href="#next-negedge"/></svg>
+              </div>
+            </div>
+            <div class="control-bar-group">
+              <div id="search-container">
+                <textarea id="search-bar" class="search-input" autocorrect="off" autocapitalize="off" spellcheck="false" wrap="off" aria-label="Find" placeholder="Search" title="Find"></textarea>
+                <div class="search-button selected-button" title="Go to Time specified" id="time-equals-button">
+                  <svg class="custom-icon" viewBox="0 0 16 16"><use href="#time-equals"/></svg>
+                </div>
+                <div class="search-button" title="Search by hex value" id="value-equals-button">
+                  <svg class="custom-icon" viewBox="0 0 16 16"><use id="value-icon-reference" href="#search-hex"/></svg>
+                </div>
+              </div>
+              <div class="control-bar-button" title="Previous" id="previous-button">
+                <div class='codicon codicon-arrow-left' style="font-size:20px"></div>
+              </div>
+              <div class="control-bar-button" title="Next" id="next-button">
+                <div class='codicon codicon-arrow-right' style="font-size:20px"></div>
+              </div>
+            </div>
+            <div class="control-bar-group">
+              <div class="format-button" title="Enable Touchpad Scrolling" id="touchpad-scroll-button">
+                <svg class="custom-icon" viewBox="0 0 16 16"><use href="#touchpad"/></svg>
+              </div>
+            </div>
+          </div>
+          <div id="viewer-container">
+            <div id="resize-1" class="resize-bar"></div>
+            <div id="resize-2" class="resize-bar"></div>
+          </div>
+          <div id="waveform-labels-container" class="labels-container">
+            <div id="waveform-labels-spacer" class="ruler-spacer">
+              <div class="format-button" title="Format in Binary" id="format-binary-button">
+                <svg class="custom-icon" viewBox="0 0 16 16"><use href="#search-binary"/></svg>
+              </div>
+              <div class="format-button selected-button" title="Format in Hexidecimal" id="format-hex-button">
+                <svg class="custom-icon" viewBox="0 0 16 16"><use href="#search-hex"/></svg>
+              </div>
+              <div class="format-button" title="Format in Decimal" id="format-decimal-button">
+                <svg class="custom-icon" viewBox="0 0 16 16"><use href="#search-decimal"/></svg>
+              </div>
+              <div class="format-button" title="Format as Enumerator (if available)" id="format-enum-button">
+                <svg class="custom-icon" viewBox="0 0 16 16"><use href="#search-enum"/></svg>
+              </div>
+            </div>
+            <div id="waveform-labels"> </div>
+          </div>
+          <div id="transition-display-container" class="labels-container">
+            <div class="ruler-spacer"></div>
+            <div id="transition-display"></div>
+          </div>
+          <div id="scrollArea">
+            <div id="contentArea" tabindex="0"></div>
+          </div>
+          <div id="scrollbarContainer"><div id="scrollbar"></div></div>
+        </div>
+        <script src="${webAssets.jsFileUri}"></script>
+      </body>
+      </html>
+    `;
+
+    return htmlContent;
+  }
+}
+
+/**
+ * Tracks all webviews.
+ */
+class WebviewCollection {
+
+  private numWebviews = 0;
+  public get getNumWebviews() {return this.numWebviews;}
+
+  private readonly _webviews = new Set<{
+    readonly resource: string;
+    readonly webviewPanel: vscode.WebviewPanel;
+  }>();
+
+  /**
+   * Get all known webviews for a given uri.
+   */
+  public *get(uri: vscode.Uri): Iterable<vscode.WebviewPanel> {
+    const key = uri.toString();
+    for (const entry of this._webviews) {
+      if (entry.resource === key) {
+        yield entry.webviewPanel;
+      }
+    }
+  }
+
+  /**
+   * Add a new webview to the collection.
+   */
+  public add(uri: vscode.Uri, webviewPanel: vscode.WebviewPanel) {
+    const entry = { resource: uri.toString(), webviewPanel };
+    this._webviews.add(entry);
+    this.numWebviews++;
+
+    webviewPanel.onDidDispose(() => {
+      this._webviews.delete(entry);
+      this.numWebviews--;
+    });
+  }
+}
+
+class NetlistTreeDataProvider implements vscode.TreeDataProvider<NetlistItem> {
+  private treeData: NetlistItem[] = [];
+  private _onDidChangeTreeData: vscode.EventEmitter<NetlistItem | undefined> = new vscode.EventEmitter<NetlistItem | undefined>();
+  readonly onDidChangeTreeData: vscode.Event<NetlistItem | undefined> = this._onDidChangeTreeData.event;
+
+  public setCheckboxState(netlistItem: NetlistItem, checkboxState: vscode.TreeItemCheckboxState) {
+    netlistItem.checkboxState = checkboxState;
+    this._onDidChangeTreeData.fire(undefined); // Trigger a refresh of the Netlist view
+  }
+
+  // Method to set the tree data
+  public setTreeData(netlistItems: NetlistItem[]) {
+    this.treeData = netlistItems;
+    this._onDidChangeTreeData.fire(undefined); // Trigger a refresh of the Netlist view
+  }
+
+  public hide() {
+    this.setTreeData([]);
+  }
+
+  public getTreeData(): NetlistItem[] {return this.treeData;}
+
+  public findTreeItem(modulePath: string): NetlistItem | undefined {
+    let module = this.treeData.find((element) => element.label === modulePath.split('.')[0]);
+    return module?.findChild(modulePath.split('.').slice(1).join('.'));
+  }
+
+  getTreeItem(element:  NetlistItem): vscode.TreeItem {return element;}
+  getChildren(element?: NetlistItem): Thenable<NetlistItem[]> {
+    if (element) {return Promise.resolve(element.children);} // Return the children of the selected element
+    else         {return Promise.resolve(this.treeData);} // Return the top-level netlist items
+  }
+
+  refresh(): void {
+    this._onDidChangeTreeData.fire(undefined);
+  }
+}
+
+class DisplayedSignalsViewProvider implements vscode.TreeDataProvider<NetlistItem> {
+  private treeData: NetlistItem[] = [];
+  private _onDidChangeTreeData: vscode.EventEmitter<NetlistItem | undefined> = new vscode.EventEmitter<NetlistItem | undefined>();
+  readonly onDidChangeTreeData: vscode.Event<NetlistItem | undefined> = this._onDidChangeTreeData.event;
+
+  // Method to set the tree data
+  public setTreeData(netlistItems: NetlistItem[]) {
+    this.treeData = netlistItems;
+    this._onDidChangeTreeData.fire(undefined); // Trigger a refresh of the Netlist view
+  }
+
+  public hide() {
+    this.setTreeData([]);
+  }
+
+  public getTreeData(): NetlistItem[] {return this.treeData;}
+
+  getTreeItem(element:  NetlistItem): vscode.TreeItem {return element;}
+  getChildren(element?: NetlistItem): Thenable<NetlistItem[]> {
+    if (element) {return Promise.resolve(element.children);} // Return the children of the selected element
+    else         {return Promise.resolve(this.treeData);} // Return the top-level netlist items
+  }
+
+  public addSignalToTreeData(netlistItem: NetlistItem) {
+    this.treeData.push(netlistItem);
+    this._onDidChangeTreeData.fire(undefined); // Trigger a refresh of the Netlist view
+  }
+
+  public removeSignalFromTreeData(netlistItem: NetlistItem) {
+    const index = this.treeData.indexOf(netlistItem);
+    if (index > -1) {
+      this.treeData.splice(index, 1);
+    }
+    this._onDidChangeTreeData.fire(undefined); // Trigger a refresh of the Netlist view
+  }
+
+  refresh(): void {
+    this._onDidChangeTreeData.fire(undefined);
+  }
+}
+
+interface TreeCheckboxChangeEvent<T> {
+  item: T;
+  checked: boolean;
+}
+
+class NetlistItem extends vscode.TreeItem {
+  private _onDidChangeCheckboxState: vscode.EventEmitter<vscode.TreeItem | undefined | null> = new vscode.EventEmitter<vscode.TreeItem | undefined | null>();
+  onDidChangeCheckboxState: vscode.Event<vscode.TreeItem | undefined | null> = this._onDidChangeCheckboxState.event;
+
+  constructor(
+    public readonly label:            string,
+    public readonly type:             string,
+    public readonly width:            number,
+    public readonly signalId:         string, // Signal-specific information
+    public readonly netlistId:        string, // Netlist-specific information
+    public readonly name:             string,
+    public readonly modulePath:       string,
+    public readonly children:         NetlistItem[] = [],
+    public collapsibleState: vscode.TreeItemCollapsibleState,
+    public checkboxState: vscode.TreeItemCheckboxState = vscode.TreeItemCheckboxState.Unchecked // Display preference
+  ) {
+    super(label, collapsibleState);
+    if (collapsibleState === vscode.TreeItemCollapsibleState.None) {
+      this.contextValue = 'netlistItem'; // Set a context value for leaf nodes
+    } else {
+      this.contextValue = 'netlistModule'; // Set a context value for parent nodes
+    }
+  }
+
+  findChild(label: string): NetlistItem | undefined {
+
+    if (label === '') {return this;}
+
+    let subModules    = label.split(".");
+    let currentModule = subModules.shift();
+    let childItem     = this.children.find((child) => child.label === currentModule);
+
+    if (childItem) {
+      return childItem.findChild(subModules.join("."));
+    } else {
+      return undefined;
+    }
+  };
+
+  handleCommand() {
+    //console.log("handleCommand()");
+    //console.log(this);
+  };
+
+  // Method to toggle the checkbox state
+  toggleCheckboxState() {
+    this.checkboxState = this.checkboxState === vscode.TreeItemCheckboxState.Checked
+      ? vscode.TreeItemCheckboxState.Unchecked
+      : vscode.TreeItemCheckboxState.Checked;
+    this._onDidChangeCheckboxState.fire(this);
+  }
+}
+
+const BASE_CHUNK_TIME_WINDOW = 512;
+const TIME_INDEX   = 0;
+const VALUE_INDEX  = 1;
+
+type WaveformTopMetadata = {
+  timeEnd:     number;
+  filename:    string;
+  chunkTime:   number;
+  chunkCount:  number;
+  timeScale:   number;
+  defaultZoom: number;
+  timeUnit:    string;
+};
+
+type NetlistIdRef = {
+  netlistItem: NetlistItem;
+  displayedItem: NetlistItem | undefined;
+  signalId: SignalId;
+};
+
+type NetlistIdTable = Map<NetlistId, NetlistIdRef>;
+
+type TransitionData = [number, number | string];
+type SignalId  = string;
+type NetlistId = string;
+
+class WaveformTop {
+  public netlistElements: Map<string, SignalWaveform>;
+  public metadata:   WaveformTopMetadata = {
+    timeEnd:     0,
+    filename:    "",
+    chunkTime:   BASE_CHUNK_TIME_WINDOW,
+    chunkCount:  0,
+    timeScale:   1,
+    defaultZoom: 1,
+    timeUnit:    "ns",
+  };
+
+  constructor() {
+    this.netlistElements = new Map();
+  }
+
+  public createSignalWaveform(signalId: SignalId, width: number) {
+    // Check if the signal waveform already exists, and if not, create a new one
+    if (!this.netlistElements.has(signalId)) {
+      let waveform = new SignalWaveform(width, this.metadata.chunkCount);
+      this.netlistElements.set(signalId, waveform);
+    }
+  }
+
+  public setInitialState(signalId: SignalId, initialState: number | string = "x") {
+    // Check if the signal waveform exists in the map
+    const waveform = this.netlistElements.get(signalId);
+    if (waveform) {
+      // Add the transition data to the signal waveform
+      waveform.transitionData.push([0, initialState]);
+      waveform.chunkStart[0] = 1;
+    } else {
+      // Console log an error message if the signal waveform doesn't exist
+      //console.log(`${signalId} not in netlist (initialState)`);
+    }
+  }
+
+  public addTransitionData(signalId: SignalId, transitionData: TransitionData, previousState: number | string) {
+    // Check if the signal waveform exists in the map
+    const waveform = this.netlistElements.get(signalId);
+    if (waveform) {
+      // Add the transition data to the signal waveform
+      waveform.addTransitionData(transitionData, this.metadata.chunkTime);
+    } else {
+      // Console log an error message if the signal waveform doesn't exist
+      //console.log(`${signalId} not in netlist (transitionData)`);
+    }
+  }
+
+  public dispose() {
+    //console.log("dispose() - waveformTop");
+    this.netlistElements.clear();
+    this.metadata.timeEnd = 0;
+    this.metadata.filename = "";
+    this.metadata.chunkCount = 0;
+  }
+}
+
+class SignalWaveform {
+
+  public transitionData: TransitionData[];
+  public chunkStart: number[];
+
+  constructor(
+    public signalWidth: number,
+    chunkCount: number
+    ) {
+    this.chunkStart     = new Array(chunkCount);
+    this.transitionData = [];
+  }
+
+  public addTransitionData(transitionValue: TransitionData, chunkTime: number) {
+    const time       = transitionValue[TIME_INDEX];
+    const chunkIndex = Math.floor(time / chunkTime);
+    const previousChunkIndex = Math.floor(this.transitionData[this.transitionData.length - 1][TIME_INDEX] / chunkTime);
+  
+    for (let i = previousChunkIndex + 1; i <= chunkIndex; i++) {
+      this.chunkStart[i] = this.transitionData.length;
+    }
+
+    this.transitionData.push(transitionValue);
+  }
+}
+
+// Simple string hashing algorithm
+function hashCode(s: string) {
+  let num = s.split("").reduce((a, b) => {
+    a = ((a << 5) - a) + b.charCodeAt(0);
+    return a & a;
+  }, 0);
+  return Math.abs(num).toString(36);
+}
+
+function newHashCode(s: string, hashTable: Map<string, NetlistIdRef>) {
+  let hash          = '';
+  let hashCollision = true;
+
+  while (hash.length === 0 || hashCollision) {
+    hash          = hashCode(s + hash).toString();
+    hashCollision = hashTable.has(hash);
+  }
+
+  return hash;
+}
+
+// Function to parse the VCD data and populate the Netlist view
+function parseVCDData(vcdData: string, netlistTreeDataProvider: NetlistTreeDataProvider, waveformDataSet: WaveformTop, netlistIdTable: NetlistIdTable, progress: vscode.Progress<{ message?: string; increment?: number; }>) {
+
+  // Define a data structure to store the netlist items
+  const netlistItems: NetlistItem[] = [];
+  const stack:        NetlistItem[] = [];
+  let modulePath:     string[]      = [];
+  let modulePathString = "";
+  let currentScope:   NetlistItem | undefined;
+  let currentSignal = "";
+
+  // Define variables to track the current state
+  let currentTimestamp  = 0;
+  let initialState: number | string;
+  const signalValues: Map<string, number | string> = new Map(); // Map to track signal values
+
+  let currentMode: string | undefined = undefined;
+
+  // Split VCD data into lines
+  const lines = vcdData.split('\n');
+  const lineCount = lines.length;
+
+  //console.log("Parsing VCD data. File contains " + lineCount + " lines.");
+
+  // Find the real minimum time step so that we can establish an apporpriate
+  // chunk size We find the optimal chunk time by finding the shortest rolling
+  // time step of 128 value changes in a row.
+
+  let timeStepArray: number[] = new Array(128).fill(-9999999);
+  let minTimeStemp      = 9999999;
+  let timeStepIndex     = 0;
+  let maxTime           = 0;
+  let eventCount        = 0;
+
+  progress.report({ increment: 4, message: "Analyzing VCD File"});
+  for (const line of lines) {
+
+    const cleanedLine = line.trim();
+    if (cleanedLine.startsWith('#')) {
+      // Extract timestamp
+      const timestampMatch = cleanedLine.match(/#(\d+)/);
+      if (timestampMatch) {
+        eventCount++;
+        const currentTimestamp = parseInt(timestampMatch[1]);
+        timeStepArray[timeStepIndex] = currentTimestamp;
+        timeStepIndex = (timeStepIndex + 1) % 128;
+        const rollingTimeStep = currentTimestamp - timeStepArray[timeStepIndex];
+        minTimeStemp = Math.min(rollingTimeStep, minTimeStemp);
+      }
+    }
+  }
+
+  if (eventCount < 128) {
+    minTimeStemp = timeStepArray[eventCount - 1];
+  }
+
+  // Prevent weird zoom ratios causing strange floating point math errors
+  minTimeStemp = 10 ** (Math.round(Math.log10(minTimeStemp / 128)) | 0);
+  waveformDataSet.metadata.chunkTime   = minTimeStemp * 128;
+  waveformDataSet.metadata.defaultZoom = 512 / waveformDataSet.metadata.chunkTime;
+
+  //// Prevent weird zoom ratios causing strange floating point math errors
+  //minTimeStemp = 10 ** (Math.round(Math.log10(minTimeStemp)) | 0);
+  //waveformDataSet.metadata.chunkTime   = (BASE_CHUNK_TIME_WINDOW * minTimeStemp) / 4;
+  //waveformDataSet.metadata.defaultZoom = BASE_CHUNK_TIME_WINDOW / waveformDataSet.metadata.chunkTime;
+
+  //console.log("Minimum time step: " + minTimeStemp);
+  //console.log("Chunk time: " + waveformDataSet.metadata.chunkTime);
+  //console.log("Max time: " + maxTime);
+
+  progress.report({ increment: 5, message: "Parsing VCD File"});
+
+  const progressBarUpdateInterval = Math.floor(lineCount / 9);
+  let lineNum = 0;
+  for (const line of lines) {
+    lineNum++;
+
+    if (lineNum % progressBarUpdateInterval === 0) {
+      //console.log("Progress: " + lineNum + " / " + lineCount);
+      progress.report({ increment: 10, message: "Parsing VCD File"});
+    }
+
+    // Remove leading and trailing whitespace
+    const cleanedLine = line.trim();
+
+    if (cleanedLine.startsWith('$scope')) {
+      currentMode   = 'scope';
+      currentSignal = "";
+      // Extract the current scope
+      const scopeData = cleanedLine.split(/\s+/);
+      const scopeType = scopeData[1];
+      const scopeName = scopeData[2];
+      let iconColor = new vscode.ThemeColor('charts.white');
+      let iconType  = 'symbol-module';
+      if (scopeType === 'module') {
+        iconColor   = new vscode.ThemeColor('charts.purple');
+        iconType    = 'chip';
+      } else if (scopeType === 'function') {
+        iconColor   = new vscode.ThemeColor('charts.yellow');
+      }
+      const netlistId   = newHashCode(modulePathString + "." + scopeName, netlistIdTable);
+      const newScope    = new NetlistItem(scopeName, 'module', 0, '', netlistId, '', modulePathString, [], vscode.TreeItemCollapsibleState.Collapsed);
+      newScope.iconPath = new vscode.ThemeIcon(iconType, iconColor);
+      modulePath.push(scopeName);
+      modulePathString = modulePath.join(".");
+      if (currentScope) {
+        currentScope.children.push(newScope); // Add the new scope as a child of the current scope
+      } else {
+        netlistItems.push(newScope); // If there's no current scope, add it to the netlistItems
+      }
+      // Push the new scope onto the stack and set it as the current scope
+      stack.push(newScope);
+      currentScope = newScope;
+
+    } else if (cleanedLine.startsWith('$upscope')) {
+      stack.pop(); // Pop the current scope from the stack
+      currentScope = stack[stack.length - 1]; // Update th current scope to the parent scope
+      modulePath.pop();
+      modulePathString = modulePath.join(".");
+      currentSignal    = "";
+    } else if (cleanedLine.startsWith('$var') && currentMode === 'scope') {
+      // Extract signal information (signal type and name)
+      //const varMatch = cleanedLine.match(/\$var\s+(wire|reg|integer|parameter|real)\s+(1|[\d+:]+)\s+(\w+)\s+(\w+(\[\d+)?(:\d+)?\]?)\s\$end/);
+      if (currentScope) {
+        const varData             = cleanedLine.split(/\s+/);
+        const signalType          = varData[1];
+        const signalSize          = parseInt(varData[2], 10);
+        const signalID            = varData[3];
+        const signalNameWithField = varData[4];
+        const signalName          = signalNameWithField.split('[')[0];
+        const netlistId           = newHashCode(modulePathString + "." + signalNameWithField, netlistIdTable);
+        
+        if (signalName !== currentSignal) {
+          // Create a NetlistItem for the signal and add it to the current scope
+          const signalItem = new NetlistItem(signalNameWithField, signalType, signalSize, signalID, netlistId, signalName, modulePathString, [], vscode.TreeItemCollapsibleState.None, vscode.TreeItemCheckboxState.Unchecked);
+
+          // Assign an icon to the signal based on its type
+          if ((signalType === 'wire') || (signalType === 'reg')) {
+            if (signalSize > 1) {
+              signalItem.iconPath = new vscode.ThemeIcon('symbol-array', new vscode.ThemeColor('charts.green'));
+            } else {
+              signalItem.iconPath = new vscode.ThemeIcon('symbol-interface', new vscode.ThemeColor('charts.pink'));
+            }
+          } else if (signalType === 'integer') {
+              signalItem.iconPath = new vscode.ThemeIcon('symbol-variable', new vscode.ThemeColor('charts.blue'));
+          } else if (signalType === 'parameter') {
+              signalItem.iconPath = new vscode.ThemeIcon('settings', new vscode.ThemeColor('charts.orange'));
+          } else if (signalType === 'real') {
+              signalItem.iconPath = new vscode.ThemeIcon('symbol-constant', new vscode.ThemeColor('charts.purple'));
+          }
+
+          currentScope.children.push(signalItem);
+          netlistIdTable.set(netlistId, {netlistItem: signalItem, displayedItem: undefined, signalId: signalID});
+        }
+        currentSignal    = signalName;
+        waveformDataSet.createSignalWaveform(signalID, signalSize);
+      }
+    // Parse out waveform data
+    } else if (cleanedLine.startsWith('#')) {
+      // Extract timestamp
+      const timestampMatch = cleanedLine.match(/#(\d+)/);
+      if (timestampMatch) {
+        currentTimestamp  = parseInt(timestampMatch[1]);
+      }
+    } else if (cleanedLine.startsWith('b')) {
+      // Extract signal value
+      const valueMatch = cleanedLine.match(/b([01xzXZ]*)\s+(.+)/);
+      if (valueMatch) {
+        const signalValue = valueMatch[1];
+        const signalId    = valueMatch[2];
+
+        if (currentTimestamp !== 0) {
+          initialState = signalValues.get(signalId) || "x";
+          waveformDataSet.addTransitionData(signalId, [currentTimestamp, signalValue], initialState);
+        } else {
+          waveformDataSet.setInitialState(signalId, signalValue);
+        }
+        // Update the state of the signal in the map
+        signalValues.set(signalId, signalValue);
+      }
+    } else if (cleanedLine.match(/^[01xzXZ].+$/)) {
+      // Extract signal value
+      const valueMatch = cleanedLine.match(/([01xzXZ])(.+)/);
+      if (valueMatch) {
+        const signalValue = valueMatch[1];
+        const signalId    = valueMatch[2];
+
+        if (currentTimestamp !== 0) {
+          initialState = signalValues.get(signalId) || "x";
+          waveformDataSet.addTransitionData(signalId, [currentTimestamp, signalValue], initialState);
+        } else {
+          waveformDataSet.setInitialState(signalId, signalValue);
+        }
+        // Update the state of the signal in the map
+        signalValues.set(signalId, signalValue);
+      }
+    } else if (cleanedLine.startsWith('$timescale')) {
+      currentMode = 'timescale';
+    } else if (cleanedLine.startsWith('$end')) {
+      currentMode = undefined;
+    }
+    if (currentMode === 'timescale') {
+      const timescaleMatch = cleanedLine.match(/(\d+)\s*(\w+)/);
+      if (timescaleMatch) {
+        waveformDataSet.metadata.timeScale = parseInt(timescaleMatch[1]);
+        waveformDataSet.metadata.timeUnit  = timescaleMatch[2];
+      }
+    }
+  }
+
+  waveformDataSet.metadata.timeEnd = currentTimestamp + 1;
+  signalValues.forEach((initialState, signalId) => {
+    const postState   = 'X';
+    const signalWidth = waveformDataSet.netlistElements.get(signalId)?.signalWidth || 1;
+    waveformDataSet.addTransitionData(signalId, [currentTimestamp, postState.repeat(signalWidth)], initialState);
+    waveformDataSet.metadata.chunkCount = Math.ceil(waveformDataSet.metadata.timeEnd / waveformDataSet.metadata.chunkTime);
+  });
+
+  // Update the Netlist view with the parsed netlist data
+  netlistTreeDataProvider.setTreeData(netlistItems);
+}
+
+export function activate(context: vscode.ExtensionContext) {
+
+  const viewerProvider = new WaveformViewerProvider(context);
+
+  // Terminal link provider code
+  // Detect UVM timestamps - ie: @ 1234
+  const uvmTimestampRegex  = /@\s+(\d+)/g;
+  // Detect timestamps with units - ie: 1.234 ns
+  const timeStampWithUnits = /([\d,\.]+)\s*([kmµunpf]?s)/g;
+  // Detect netlist elements in the terminal - ie: top.submodule.signal
+  const netlistElement     = /[\w\$]+(\.[\w\$]+)+/g;
+
+  interface CustomTerminalLink extends vscode.TerminalLink {data: string; type: string;}
+
+  vscode.window.registerTerminalLinkProvider({
+    provideTerminalLinks: (context: vscode.TerminalLinkContext, token: vscode.CancellationToken) => {
+
+      const uvmTimestampMatches       = [...context.line.matchAll(uvmTimestampRegex)];
+      const timeStampWithUnitsMatches = [...context.line.matchAll(timeStampWithUnits)];
+      const netlistElementMatches     = [...context.line.matchAll(netlistElement)];
+
+      const uvmTimestampLinks = uvmTimestampMatches.map(match => {
+        const line       = context.line;
+        const startIndex = line.indexOf(match[0]);
+
+        return {
+          startIndex,
+          length: match[0].length,
+          tooltip: 'Go to time: ' + match[1] + ' in waveform viewer',
+          data: match[0],
+          type: 'uvm-timestamp'
+        } as CustomTerminalLink;
+      });
+
+      const timeStampWithUnitsLinks = timeStampWithUnitsMatches.map(match => {
+        const line       = context.line;
+        const startIndex = line.indexOf(match[0]);
+
+        return {
+          startIndex,
+          length: match[0].length,
+          tooltip: 'Go to ' + match[1] + ' ' + match[2] + ' in waveform viewer',
+          data: match[0],
+          type: 'timestamp-with-units'
+        } as CustomTerminalLink;
+      });
+
+      const netlistElementLinks = netlistElementMatches.map(match => {
+        const line       = context.line;
+        const startIndex = line.indexOf(match[0]);
+
+        return {
+          startIndex,
+          length: match[0].length,
+          tooltip: 'Add "' + match[0] + '" to waveform viewer',
+          data: match[0],
+          type: 'netlist-element'
+        } as CustomTerminalLink;
+      });
+
+      return [...uvmTimestampLinks, ...timeStampWithUnitsLinks, ...netlistElementLinks];
+    },
+
+    handleTerminalLink: (link: CustomTerminalLink) => {
+
+      switch (link.type) {
+        case 'uvm-timestamp': {
+          const time = parseInt([...link.data.matchAll(uvmTimestampRegex)][0][1]);
+          //console.log("UVM Timestamp link clicked: " + time);
+          viewerProvider.setMarkerAtTime(time);
+          break;
+        }
+        case 'timestamp-with-units': {
+          const time  = parseFloat([...link.data.matchAll(timeStampWithUnits)][0][1]);
+          const units = [...link.data.matchAll(timeStampWithUnits)][0][2];
+          //console.log("Timestamp with units link clicked: " + time + '; units: ' + units);
+          viewerProvider.setMarkerAtTimeWithUnits(time, units);
+          break;
+        }
+        case 'netlist-element': {
+          //console.log("Netlist element link clicked: " + link.data);
+          viewerProvider.addSignalByNameToDocument(link.data);
+          break;
+        }
+      }
+    }
+  });
+
+  // Associates .vcd files with vaporview extension
+  // See package.json for more details
+  vscode.window.registerCustomEditorProvider(
+    'vaporview.waveformViewer',
+    viewerProvider,
+    {
+      webviewOptions: {
+        retainContextWhenHidden: true,
+      },
+      supportsMultipleEditorsPerDocument: false,
+    });
+
+  // I want to get semantic tokens for the current theme
+  // The API is not available yet, so I'm just going to log the theme
+  //vscode.window.onDidChangeActiveColorTheme((e) => {});
+
+  // Commands
+  context.subscriptions.push(vscode.commands.registerCommand('vaporview.viewVaporViewSidebar', () => {
+    vscode.commands.executeCommand('workbench.view.extension.vaporView');
+  }));
+
+  // Add or remove signal commands
+  context.subscriptions.push(vscode.commands.registerCommand('vaporview.removeSignal', (e) => {
+    if (e.netlistId) {
+      viewerProvider.removeSignalFromDocument(e.netlistId);
+    }
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('vaporview.addSelected', (e) => {
+    viewerProvider.filterAddSignalsInNetlist(viewerProvider.netlistViewSelectedSignals);
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('vaporview.addAllInModule', (e) => {
+    if (e.collapsibleState === vscode.TreeItemCollapsibleState.None) {return;}
+    viewerProvider.filterAddSignalsInNetlist(e.children);
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('vaporview.removeSelectedNetlist', (e) => {
+    viewerProvider.removeSelectedSignalsFromDocument('netlist');
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('vaporview.removeSelectedDisplayedSignals', (e) => {
+    viewerProvider.removeSelectedSignalsFromDocument('displayedSignals');
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('vaporview.removeAllInModule', (e) => {
+    if (e.collapsibleState === vscode.TreeItemCollapsibleState.None) {return;}
+    viewerProvider.removeSignalList(e.children);
+  }));
+
+  // WaveDrom commands
+  context.subscriptions.push(vscode.commands.registerCommand('vaporview.copyWaveDrom', (e) => {
+    viewerProvider.copyWaveDrom();
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('vaporview.setWaveDromClockRising', (e) => {
+    viewerProvider.webviewContext.waveDromClock = {edge: '1', netlistId: e.netlistId,};
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('vaporview.setWaveDromClockFalling', (e) => {
+    viewerProvider.webviewContext.waveDromClock = {edge: '0', netlistId: e.netlistId,};
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('vaporview.unsetWaveDromClock', (e) => {
+    viewerProvider.webviewContext.waveDromClock = {edge: '1', netlistId: null,};
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('vaporview.saveViewerSettings', (e) => {
+    viewerProvider.saveSettings();
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('vaporview.loadViewerSettings', (e) => {
+    viewerProvider.loadSettings();
+  }));
+}
+
+export default WaveformViewerProvider;
+
+export function deactivate() {}

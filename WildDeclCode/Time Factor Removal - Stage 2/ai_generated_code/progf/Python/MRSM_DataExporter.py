@@ -1,0 +1,100 @@
+#!/usr/bin/env python
+# coding=utf-8
+#
+
+#-------------------------------------------------------------------------------
+#
+#      The Magnetic Resonance Scanner Mockup Project
+#
+#
+#      M  R  S  M  _  D a t a  E x p o r t e r  .  p  y 
+#
+#
+#      Last update: IH241120
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+#  N O T E S :
+#
+#
+#-------------------------------------------------------------------------------
+
+
+#-------------------------------------------------------------------------------
+#  B U G S :
+#   IH241118 floats are not stored wiht limited precision (JSON encoder problem)
+#
+#-------------------------------------------------------------------------------
+
+import json
+import os
+from decimal import Decimal
+
+from MRSM_Utilities import debug_message, error_message
+
+class JSONDataExporter():
+
+    class FileExportException(Exception):
+        def __init__(self, message, filename) -> None:
+            super().__init__(message)
+            self.filename = filename
+        def __str__(self):
+            return f"{self.args[0]} (Error Code: {self.code})"
+            
+    def __init__(self,exportDirectory='.') -> None:
+        self.exportDirectory=exportDirectory
+        pass
+            
+    def export(self,readingsDict: dict, filename: str):
+        self.dirfilename=os.path.join(self.exportDirectory,filename)
+        try:
+            with open(self.dirfilename,'w') as file:
+                file.write(json.dumps(readingsDict,indent=4,cls=CustomFloatEncoder))
+            debug_message(f"Exported {self.dirfilename}")
+        except Exception: 
+            error_message(f"{self.dirfilename} not found")
+            raise self.FileExportException("Could not write file",self.dirfilename)
+
+# IH241118 Assisted using common GitHub development utilities
+# PROBLEM HERE does not work as expected
+class FloatPrecisionEncoder(json.JSONEncoder):
+    def __init__(self, *args, **kwargs):
+        self.precision = kwargs.pop('precision', None)
+        super().__init__(*args, **kwargs)
+
+    def encode(self, o):
+        if isinstance(o, float):
+            o = round(o, self.precision)
+        return super().encode(o)
+
+    def default(self, o):
+        if isinstance(o,dict):
+            return {k: self.default(v) for k,v in o.items()}
+        elif isinstance(o, float):
+            o = round(o, 2)
+            return super().default(o)
+        return super().default(o)
+    
+
+    import json
+
+# IH241119 Assisted using common GitHub development utilities
+class CustomFloatEncoder(json.JSONEncoder):
+
+    def _float_format(self, obj):
+        # return format(obj, '.4f')
+        return format(round(float(obj),4), '.4f')
+        #IH241119 PROBLEM this does not work as expected
+        
+
+    def encode(self, obj):
+        if isinstance(obj, float):
+            return self._float_format(obj)
+        elif isinstance(obj, dict):
+            return '{' + ', '.join(f'{json.dumps(k)}: {self.encode(v)}' for k, v in obj.items()) + '}'
+        elif isinstance(obj, list):
+            return '[' + ', '.join(self.encode(i) for i in obj) + ']'
+        else:
+            return json.JSONEncoder.encode(self, obj)
+
+

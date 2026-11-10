@@ -1,0 +1,615 @@
+// Aided with basic GitHub coding tools
+// PrismWeave Logging Utility
+// Enhanced logging system with environment awareness, component-specific controls, and structured logging
+
+import { getGlobalScope } from './global-types';
+
+type LogLevel = 0 | 1 | 2 | 3 | 4;
+type Environment = 'development' | 'production' | 'test';
+
+interface ILogStyles {
+  error: string;
+  warn: string;
+  info: string;
+  debug: string;
+  trace: string;
+}
+
+interface IComponentLogConfig {
+  enabled: boolean;
+  level: LogLevel;
+}
+
+interface ILogContext {
+  component: string;
+  timestamp: string;
+  environment: Environment;
+  [key: string]: unknown;
+}
+
+interface IStructuredLogData {
+  level: string;
+  message: string;
+  context: ILogContext;
+  data?: unknown[];
+  error?: {
+    name: string;
+    message: string;
+    stack?: string;
+  };
+}
+
+class Logger {
+  public component: string;
+  public enabled: boolean = false;
+  public level: LogLevel = 0;
+  private styles: ILogStyles;
+  public environment: Environment;
+  private componentConfig: IComponentLogConfig | null = null;
+
+  static readonly LEVELS = {
+    ERROR: 0 as const,
+    WARN: 1 as const,
+    INFO: 2 as const,
+    DEBUG: 3 as const,
+    TRACE: 4 as const,
+  };
+
+  static readonly LEVEL_NAMES = ['ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE'] as const;
+
+  // Helper methods for common operations
+  static isValidLevel(level: unknown): level is LogLevel {
+    return typeof level === 'number' && level >= 0 && level <= 4;
+  }
+
+  static getGlobalScope(): any {
+    return getGlobalScope() as any;
+  }
+
+  constructor(component: string = 'PrismWeave') {
+    this.component = component;
+    this.environment = this._detectEnvironment();
+
+    // Get component-specific configuration
+    this.componentConfig = this._getComponentConfig(component);
+
+    // Set initial values based on environment and component config
+    this._initializeConfiguration();
+
+    this.styles = {
+      error: 'color: #ff4444; font-weight: bold;',
+      warn: 'color: #ffaa00; font-weight: bold;',
+      info: 'color: #4444ff; font-weight: bold;',
+      debug: 'color: #888888;',
+      trace: 'color: #cccccc;',
+    };
+  }
+
+  private _detectEnvironment(): Environment {
+    // Check for test environment first
+    if (this._isTestEnvironment()) {
+      return 'test';
+    }
+
+    // Check for development environment
+    if (this._isDevelopmentEnvironment()) {
+      return 'development';
+    }
+
+    // Default to production
+    return 'production';
+  }
+
+  private _isDevelopmentEnvironment(): boolean {
+    try {
+      // Check multiple indicators for development environment
+      return (
+        (typeof process !== 'undefined' && process.env.NODE_ENV === 'development') ||
+        this._safeCheckChromeDevMode() ||
+        (typeof window !== 'undefined' && window.location?.hostname === 'localhost') ||
+        (typeof globalThis !== 'undefined' && (globalThis as any).PRISMWEAVE_DEV_MODE === true)
+      );
+    } catch (error) {
+      // If any check fails (e.g., extension context invalidated), default to production
+      return false;
+    }
+  }
+
+  private _safeCheckChromeDevMode(): boolean {
+    try {
+      // Safely check Chrome extension context
+      if (typeof chrome === 'undefined' || !chrome.runtime) {
+        return false;
+      }
+
+      // Check if extension context is still valid
+      if (chrome.runtime.lastError) {
+        return false;
+      }
+
+      // Try to access manifest
+      const manifest = chrome.runtime.getManifest();
+      return manifest?.version?.includes('dev') || false;
+    } catch (error) {
+      // Extension context invalidated or other Chrome API error
+      return false;
+    }
+  }
+
+  private _getComponentConfig(componentName: string): IComponentLogConfig | null {
+    const config = Logger.getGlobalScope().PRISMWEAVE_LOG_CONFIG;
+
+    if (
+      config?.components &&
+      typeof config.components === 'object' &&
+      config.components[componentName]
+    ) {
+      return config.components[componentName] as IComponentLogConfig;
+    }
+
+    return null;
+  }
+
+  private _initializeConfiguration(): void {
+    const globalScope = Logger.getGlobalScope();
+    const globalConfig = (globalScope as any).PRISMWEAVE_LOG_CONFIG;
+
+    // Environment-based defaults
+    const environmentDefaults = {
+      test: { enabled: false, level: Logger.LEVELS.ERROR },
+      development: { enabled: true, level: Logger.LEVELS.DEBUG },
+      production: { enabled: true, level: Logger.LEVELS.INFO },
+    };
+
+    const defaults = environmentDefaults[this.environment];
+    this.enabled = defaults.enabled;
+    this.level = defaults.level;
+
+    // Apply configurations in order of precedence
+    this._applyGlobalConfig(globalConfig);
+    this._applyComponentConfig();
+    this._applyRuntimeOverrides(globalScope);
+  }
+
+  private _applyGlobalConfig(globalConfig: any): void {
+    if (globalConfig && typeof globalConfig.enabled === 'boolean') {
+      this.enabled = globalConfig.enabled;
+    }
+    if (globalConfig && Logger.isValidLevel(globalConfig.level)) {
+      this.level = globalConfig.level;
+    }
+  }
+
+  private _applyComponentConfig(): void {
+    if (!this.componentConfig) return;
+
+    if (typeof this.componentConfig.enabled === 'boolean') {
+      this.enabled = this.componentConfig.enabled;
+    }
+    if (Logger.isValidLevel(this.componentConfig.level)) {
+      this.level = this.componentConfig.level;
+    }
+  }
+
+  private _applyRuntimeOverrides(globalScope: any): void {
+    if (typeof (globalScope as any).PRISMWEAVE_LOG_ENABLED === 'boolean') {
+      this.enabled = (globalScope as any).PRISMWEAVE_LOG_ENABLED;
+    }
+    if (Logger.isValidLevel((globalScope as any).PRISMWEAVE_LOG_LEVEL)) {
+      this.level = (globalScope as any).PRISMWEAVE_LOG_LEVEL;
+    }
+  }
+
+  private _shouldLog(level: LogLevel): boolean {
+    return this.enabled && level <= this.level;
+  }
+
+  private _isTestEnvironment(): boolean {
+    return (
+      typeof process !== 'undefined' &&
+      (process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID !== undefined)
+    );
+  }
+
+  private _formatMessage(level: LogLevel, message: unknown, ...args: unknown[]): unknown[] {
+    const levelName = Logger.LEVEL_NAMES[level];
+    const timestamp = new Date().toISOString().substr(11, 12);
+    const prefix = `[${timestamp}] [${this.component}] [${this.environment}] [${levelName}]`;
+
+    if (typeof message === 'string') {
+      return [
+        `%c${prefix} ${message}`,
+        this.styles[levelName.toLowerCase() as keyof ILogStyles],
+        ...args,
+      ];
+    } else {
+      return [
+        `%c${prefix}`,
+        this.styles[levelName.toLowerCase() as keyof ILogStyles],
+        message,
+        ...args,
+      ];
+    }
+  }
+
+  private _createStructuredLogData(
+    level: LogLevel,
+    message: unknown,
+    ...args: unknown[]
+  ): IStructuredLogData {
+    const context: ILogContext = {
+      component: this.component,
+      timestamp: new Date().toISOString(),
+      environment: this.environment,
+    };
+
+    const levelName = Logger.LEVEL_NAMES[level];
+    let logMessage = '';
+    let logData: unknown[] | undefined;
+    let errorInfo: IStructuredLogData['error'];
+
+    if (typeof message === 'string') {
+      logMessage = message;
+      logData = args.length > 0 ? args : undefined;
+    } else if (message instanceof Error) {
+      logMessage = message.message;
+      errorInfo = {
+        name: message.name,
+        message: message.message,
+        ...(message.stack && { stack: message.stack }),
+      };
+      logData = args.length > 0 ? args : undefined;
+    } else {
+      logMessage = 'Object logged';
+      logData = [message, ...args];
+    }
+
+    const structuredData: IStructuredLogData = {
+      level: levelName,
+      message: logMessage,
+      context,
+    };
+
+    if (logData) {
+      structuredData.data = logData;
+    }
+
+    if (errorInfo) {
+      structuredData.error = errorInfo;
+    }
+
+    return structuredData;
+  }
+
+  // Consolidated logging methods - eliminates duplication
+  private _log(
+    level: LogLevel,
+    consoleMethod: keyof Console,
+    message: unknown,
+    ...args: unknown[]
+  ): void {
+    if (this._shouldLog(level)) {
+      const formatMethod = console[consoleMethod] as (...args: any[]) => void;
+      formatMethod.apply(console, this._formatMessage(level, message, ...args));
+      this._logStructured(level, message, ...args);
+    }
+  }
+
+  error(message: unknown, ...args: unknown[]): void {
+    this._log(Logger.LEVELS.ERROR, 'error', message, ...args);
+  }
+
+  warn(message: unknown, ...args: unknown[]): void {
+    this._log(Logger.LEVELS.WARN, 'warn', message, ...args);
+  }
+
+  info(message: unknown, ...args: unknown[]): void {
+    this._log(Logger.LEVELS.INFO, 'info', message, ...args);
+  }
+
+  debug(message: unknown, ...args: unknown[]): void {
+    this._log(Logger.LEVELS.DEBUG, 'log', message, ...args);
+  }
+
+  trace(message: unknown, ...args: unknown[]): void {
+    this._log(Logger.LEVELS.TRACE, 'log', message, ...args);
+  }
+
+  // Structured logging methods
+  private _logStructured(level: LogLevel, message: unknown, ...args: unknown[]): void {
+    if (this.environment === 'production' && this._shouldCollectStructuredLogs()) {
+      const structuredData = this._createStructuredLogData(level, message, ...args);
+      this._storeStructuredLog(structuredData);
+    }
+  }
+
+  private _shouldCollectStructuredLogs(): boolean {
+    const config = Logger.getGlobalScope().PRISMWEAVE_LOG_CONFIG;
+    return config?.structuredLogging?.enabled === true;
+  }
+
+  private _storeStructuredLog(data: IStructuredLogData): void {
+    try {
+      const globalScope = Logger.getGlobalScope();
+      if (!(globalScope as any).PRISMWEAVE_STRUCTURED_LOGS) {
+        (globalScope as any).PRISMWEAVE_STRUCTURED_LOGS = [];
+      }
+
+      (globalScope as any).PRISMWEAVE_STRUCTURED_LOGS.push(data);
+
+      // Keep only last 100 structured logs to prevent memory issues
+      if ((globalScope as any).PRISMWEAVE_STRUCTURED_LOGS.length > 100) {
+        (globalScope as any).PRISMWEAVE_STRUCTURED_LOGS.shift();
+      }
+    } catch (error) {
+      // Silently fail structured logging to prevent recursion
+    }
+  }
+
+  // Enhanced context logging
+  withContext(contextData: Record<string, unknown>): Logger {
+    const contextLogger = new Logger(this.component);
+    contextLogger.enabled = this.enabled;
+    contextLogger.level = this.level;
+    contextLogger.environment = this.environment;
+    contextLogger.componentConfig = this.componentConfig;
+
+    // Store context data for this logger instance
+    (contextLogger as any)._contextData = contextData;
+
+    return contextLogger;
+  }
+
+  // Consolidated timer methods to eliminate duplication
+  private _createTimerLabel(label: string): string {
+    return `[${this.component}] ${label}`;
+  }
+
+  time(label: string): void {
+    if (this.enabled && this._shouldLog(Logger.LEVELS.DEBUG)) {
+      console.time(this._createTimerLabel(label));
+    }
+  }
+
+  timeEnd(label: string): void {
+    if (this.enabled && this._shouldLog(Logger.LEVELS.DEBUG)) {
+      console.timeEnd(this._createTimerLabel(label));
+    }
+  }
+
+  timeWithContext(label: string, contextData?: Record<string, unknown>): void {
+    if (this.enabled && this._shouldLog(Logger.LEVELS.DEBUG)) {
+      console.time(this._createTimerLabel(label));
+
+      const message = `⏱️ Timer started: ${label}`;
+      if (contextData) {
+        this.debug(message, contextData);
+      } else {
+        this.debug(message);
+      }
+    }
+  }
+
+  timeEndWithContext(label: string, contextData?: Record<string, unknown>): void {
+    if (this.enabled && this._shouldLog(Logger.LEVELS.DEBUG)) {
+      console.timeEnd(this._createTimerLabel(label));
+
+      const message = `⏱️ Timer ended: ${label}`;
+      if (contextData) {
+        this.debug(message, contextData);
+      } else {
+        this.debug(message);
+      }
+    }
+  }
+
+  // Utility methods
+  group(label?: string, collapsed: boolean = false): void {
+    if (this.enabled) {
+      const groupLabel = label ? `[${this.component}] ${label}` : `[${this.component}]`;
+      if (collapsed) {
+        console.groupCollapsed(groupLabel);
+      } else {
+        console.group(groupLabel);
+      }
+    }
+  }
+
+  groupEnd(): void {
+    if (this.enabled) {
+      console.groupEnd();
+    }
+  }
+
+  table(data: unknown, columns?: string[]): void {
+    if (this.enabled && this._shouldLog(Logger.LEVELS.DEBUG)) {
+      console.table(data, columns);
+    }
+  }
+
+  // Configuration methods
+  setLevel(level: LogLevel): void {
+    this.level = level;
+    this.info('Log level set to:', Logger.LEVEL_NAMES[level]);
+  }
+
+  setComponentLevel(component: string, level: LogLevel): void {
+    const globalScope = Logger.getGlobalScope();
+    if (!(globalScope as any).PRISMWEAVE_LOG_CONFIG) {
+      (globalScope as any).PRISMWEAVE_LOG_CONFIG = {
+        enabled: true,
+        level: Logger.LEVELS.INFO,
+        components: {},
+      };
+    }
+    if (!(globalScope as any).PRISMWEAVE_LOG_CONFIG.components) {
+      (globalScope as any).PRISMWEAVE_LOG_CONFIG.components = {};
+    }
+
+    (globalScope as any).PRISMWEAVE_LOG_CONFIG.components[component] = {
+      enabled: true,
+      level: level,
+    };
+
+    // Update current logger if it matches the component
+    if (this.component === component) {
+      this.level = level;
+    }
+
+    this.info(`Component '${component}' log level set to:`, Logger.LEVEL_NAMES[level]);
+  }
+
+  enable(): void {
+    this.enabled = true;
+    console.log(`%c[${this.component}] [${this.environment}] Logging enabled`, this.styles.info);
+  }
+
+  disable(): void {
+    console.log(`%c[${this.component}] [${this.environment}] Logging disabled`, this.styles.warn);
+    this.enabled = false;
+  }
+
+  // Environment and configuration reporting
+  getEnvironmentInfo(): Record<string, unknown> {
+    return {
+      component: this.component,
+      environment: this.environment,
+      enabled: this.enabled,
+      level: this.level,
+      levelName: Logger.LEVEL_NAMES[this.level],
+      componentConfig: this.componentConfig,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  // Structured log retrieval
+  static getStructuredLogs(): IStructuredLogData[] {
+    return Logger.getGlobalScope().PRISMWEAVE_STRUCTURED_LOGS || [];
+  }
+
+  static clearStructuredLogs(): void {
+    Logger.getGlobalScope().PRISMWEAVE_STRUCTURED_LOGS = [];
+  }
+
+  // Global configuration methods
+  static setGlobalLevel(level: LogLevel): void {
+    const globalScope = Logger.getGlobalScope();
+    (globalScope as any).PRISMWEAVE_LOG_LEVEL = level;
+    console.log(
+      `%cPrismWeave Global Log Level set to: ${Logger.LEVEL_NAMES[level]}`,
+      'color: #4444ff; font-weight: bold;'
+    );
+  }
+
+  static setGlobalEnabled(enabled: boolean): void {
+    const globalScope = Logger.getGlobalScope();
+    (globalScope as any).PRISMWEAVE_LOG_ENABLED = enabled;
+    console.log(
+      `%cPrismWeave Global Logging ${enabled ? 'enabled' : 'disabled'}`,
+      enabled ? 'color: #44ff44; font-weight: bold;' : 'color: #ff4444; font-weight: bold;'
+    );
+  }
+
+  static setEnvironmentLogging(environment: Environment, enabled: boolean, level?: LogLevel): void {
+    const globalScope = Logger.getGlobalScope();
+    if (!(globalScope as any).PRISMWEAVE_ENV_LOGGING) {
+      (globalScope as any).PRISMWEAVE_ENV_LOGGING = {};
+    }
+
+    (globalScope as any).PRISMWEAVE_ENV_LOGGING[environment] = {
+      enabled,
+      level: level || Logger.LEVELS.INFO,
+    };
+
+    console.log(
+      `%cEnvironment '${environment}' logging configured:`,
+      'color: #8888ff; font-weight: bold;',
+      {
+        enabled,
+        level: level ? Logger.LEVEL_NAMES[level] : 'INFO',
+      }
+    );
+  }
+
+  static getGlobalConfiguration(): Record<string, unknown> {
+    const globalScope = Logger.getGlobalScope();
+    return {
+      globalEnabled: (globalScope as any).PRISMWEAVE_LOG_ENABLED,
+      globalLevel: (globalScope as any).PRISMWEAVE_LOG_LEVEL
+        ? Logger.LEVEL_NAMES[(globalScope as any).PRISMWEAVE_LOG_LEVEL]
+        : undefined,
+      config: (globalScope as any).PRISMWEAVE_LOG_CONFIG,
+      environmentLogging: (globalScope as any).PRISMWEAVE_ENV_LOGGING,
+      structuredLogsCount: (globalScope as any).PRISMWEAVE_STRUCTURED_LOGS?.length || 0,
+    };
+  }
+}
+
+// Global logger factory with enhanced configuration
+function createLogger(component: string): Logger {
+  const logger = new Logger(component);
+
+  // Check for environment-specific overrides
+  const globalScope = Logger.getGlobalScope();
+  const envLogging = (globalScope as any).PRISMWEAVE_ENV_LOGGING?.[logger.environment];
+  if (envLogging) {
+    if (typeof envLogging.enabled === 'boolean') {
+      logger.enabled = envLogging.enabled;
+    }
+    if (Logger.isValidLevel(envLogging.level)) {
+      logger.level = envLogging.level;
+    }
+  }
+
+  // Apply global overrides (these take precedence)
+  if ((globalScope as any).PRISMWEAVE_LOG_ENABLED !== undefined) {
+    logger.enabled = (globalScope as any).PRISMWEAVE_LOG_ENABLED;
+  }
+  if ((globalScope as any).PRISMWEAVE_LOG_LEVEL !== undefined) {
+    logger.level = (globalScope as any).PRISMWEAVE_LOG_LEVEL;
+  }
+
+  return logger;
+}
+
+// Enhanced debug utilities for console usage
+function enableDebugMode(): void {
+  Logger.setGlobalEnabled(true);
+  Logger.setGlobalLevel(Logger.LEVELS.DEBUG);
+  console.log(
+    '%cPrismWeave Debug Mode Enabled',
+    'color: #00ff00; font-weight: bold; font-size: 14px;'
+  );
+  console.log('Available debug commands:', {
+    'Logger.getGlobalConfiguration()': 'Show current logging configuration',
+    'Logger.setGlobalLevel(level)': 'Set global log level (0-4)',
+    'Logger.setGlobalEnabled(boolean)': 'Enable/disable all logging',
+    'Logger.getStructuredLogs()': 'Get structured log data',
+    'Logger.clearStructuredLogs()': 'Clear structured log data',
+  });
+}
+
+function disableDebugMode(): void {
+  Logger.setGlobalEnabled(false);
+  console.log('%cPrismWeave Debug Mode Disabled', 'color: #ff0000; font-weight: bold;');
+}
+
+// Export for use in other modules
+export { createLogger, disableDebugMode, enableDebugMode, Logger };
+export type {
+  Environment,
+  IComponentLogConfig,
+  ILogContext,
+  ILogStyles,
+  IStructuredLogData,
+  LogLevel,
+};
+
+// Export to global scope
+const globalScope = getGlobalScope();
+(globalScope as any).PrismWeaveLogger = {
+  createLogger,
+  Logger,
+  enableDebugMode,
+  disableDebugMode,
+};

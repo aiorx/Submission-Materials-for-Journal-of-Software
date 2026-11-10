@@ -1,0 +1,254 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from textblob import TextBlob
+from tqdm import tqdm
+from sentence_transformers import SentenceTransformer, util
+
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from bs4 import BeautifulSoup
+import time
+
+tqdm.pandas()
+
+# lists of sentences/ phrases with different levels of concern, Produced via common programming aids-4o
+# High-Risk: Direct crisis language
+high_risk = [
+    "I don’t want to be here anymore.",
+    "There’s no way out of this.",
+    "I just want the pain to stop.",
+    "I can’t do this anymore.",
+    "I wish I could disappear forever.",
+    "No one would care if I was gone.",
+    "I don’t see a reason to keep going.",
+    "It all feels so pointless.",
+    "I’m tired of pretending I’m okay.",
+    "I’ve been thinking about ending everything.",
+    "I just want to sleep and never wake up.",
+    "Nothing matters anymore.",
+    "I don’t have the energy to fight anymore.",
+    "Everything would be better if I was gone.",
+    "I can’t escape this darkness.",
+    "I want to die",
+    "nothing matters anymore",
+    "ending it all"
+]
+
+# Moderate Concern: Seeking help, discussing struggles
+moderate_concern = [
+    "I feel lost lately.",
+    "I don’t know how to cope with everything.",
+    "Some days are just too hard to handle.",
+    "I feel like I’m drowning in my thoughts.",
+    "I wish someone understood how I feel.",
+    "It’s hard to find a reason to get out of bed.",
+    "I keep pushing through, but it’s exhausting.",
+    "I feel numb to everything around me.",
+    "I don’t know who to talk to about this.",
+    "I feel like I’m carrying too much alone.",
+    "Lately, everything just feels overwhelming.",
+    "I hate feeling like this all the time.",
+    "I can’t remember the last time I was truly happy.",
+    "I wish I could just catch a break.",
+    "I’ve been struggling, but I don’t know what to do."
+]
+
+# Low Concern: General mental health discussions
+low_concern = [
+    "Taking care of your mental health is important.",
+    "Therapy has been really helpful for me.",
+    "Sometimes self-care means setting boundaries.",
+    "Anxiety can be tough, but there are ways to manage it.",
+    "I’ve been learning a lot about mindfulness lately.",
+    "Journaling helps me process my emotions.",
+    "It’s okay to not be okay sometimes.",
+    "I think more people should talk about mental health.",
+    "Depression affects people in different ways.",
+    "Having a strong support system makes a big difference.",
+    "Exercise has really helped improve my mood.",
+    "Sleep is so important for mental well-being.",
+    "Breaking the stigma around mental health is necessary.",
+    "Small wins matter when dealing with mental health.",
+    "Managing stress takes effort, but it’s worth it."
+]
+
+def retrieve_seed_phrases(data_path, url):
+	"""Retrieve seed phrases from a reference webpage and save them to a text file."""
+	driver = webdriver.Chrome()
+	driver.maximize_window()
+	options = Options()
+	options.add_argument("--disable-blink-features=AutomationControlled")
+	options.add_argument("--headless")
+	driver.get(url)
+	time.sleep(3)
+	page_source = driver.page_source
+	with open(rf"{data_path}\references.html", "w", encoding="utf-8") as f:
+		f.write(page_source)
+		f.close()
+	with open(rf"{data_path}\references.html", "r", encoding="utf-8") as f:
+		soup = BeautifulSoup(f, "html.parser")
+		items = soup.find_all("li")
+		f.close()
+	with open(rf"{data_path}\references.txt", "w", encoding="utf-8") as f:
+		for item in items:
+			f.write(item.text)
+			f.write("\n")
+		f.close()
+
+def get_reference_text(data_path):
+    with open(rf"{data_path}\references.txt", "r", encoding="utf-8") as f:
+        high_risk_phrases = f.readlines()
+        f.close()
+
+    high_risk_phrases.extend(high_risk)
+    all_phrases = high_risk_phrases.copy()
+    all_phrases.extend(moderate_concern)
+    all_phrases.extend(low_concern)
+    return high_risk_phrases, all_phrases
+
+def vader_sentiment(text):
+	"""Return the sentiment scores of a given text using VADER."""
+	analyzer = SentimentIntensityAnalyzer()
+	sentiment = analyzer.polarity_scores(text)
+	return sentiment["neg"], sentiment["neu"], sentiment["pos"], sentiment["compound"]
+
+def textblob_sentiment(text):
+	"""Return the sentiment scores of a given text using TextBlob."""
+	text_doc = TextBlob(text)
+	sentiment = text_doc.sentiment
+	return sentiment[0], sentiment[1]
+
+def df_sentiment(df):
+	"""Add sentiment analysis columns to the dataframe."""
+	df["content"] = df["content"].fillna("")
+	df["title"] = df["title"].fillna("")
+	df["full_text"] = df["title"] + " " + df["content"]
+	df["v_neg"] = None
+	df["v_neu"] = None
+	df["v_pos"] = None
+	df["v_compound"] = None
+	df["t_polarity"] = None
+	df["t_subjectivity"] = None
+	for i, row in tqdm(df.iterrows(), total=len(df)):
+		text = row["full_text"]
+		neg, neu, pos, compound = vader_sentiment(text)
+		df.at[i, "v_neg"] = neg
+		df.at[i, "v_neu"] = neu
+		df.at[i, "v_pos"] = pos
+		df.at[i, "v_compound"] = compound
+		df.at[i, "t_polarity"] = textblob_sentiment(text)[0]
+		df.at[i, "t_subjectivity"] = textblob_sentiment(text)[1]
+	return df
+
+def seed_embeddings(seed_phrases: list, model="all-MiniLM-L6-v2"):
+	"""Generate embeddings for a list of seed phrases using a pre-trained Sentence Transformer model."""
+	model = SentenceTransformer(model)
+	embeddings = model.encode(seed_phrases, convert_to_tensor=True)
+	return embeddings
+
+def generate_ngrams(text, n=4):
+    """Generate n-grams from a given text."""
+    tokens = text.split()
+    ngrams = []
+    for i in range(len(tokens) - n + 1):
+        ngram_tokens = tokens[i : i + n]
+        ngrams.append(" ".join(ngram_tokens))
+    return ngrams
+
+def detect_relevant_ngrams(seed_phrases, ngrams, threshold=0.7):
+    """Get the most relevant n-grams from a list of seed phrases and deduplicate consecutive n-grams."""
+    ref_embeddings = seed_embeddings(seed_phrases)
+    # ngrams = generate_ngrams(text=text, n=n)
+    if not ngrams:
+        return []
+
+    ngram_embeddings = seed_embeddings(ngrams)
+    cos_sim_matrix = util.cos_sim(ngram_embeddings, ref_embeddings)
+    flagged_ngrams = []
+    for i, ngram in enumerate(ngrams):
+        row_similarities = cos_sim_matrix[i]
+        if row_similarities.max() >= threshold:
+            best_seed_idx = int(row_similarities.argmax())
+            best_seed_phrase = seed_phrases[best_seed_idx]
+            best_score = float(row_similarities[best_seed_idx])
+
+            flagged_ngrams.append({
+                "ngram": ngram,
+                "similar_seed_phrase": best_seed_phrase,
+                "similarity_score": best_score
+            })
+
+    filtered_flagged = []
+    i = 0
+    while i < len(flagged_ngrams):
+        if i < len(flagged_ngrams) - 1:
+            current_ngram = flagged_ngrams[i]["ngram"].split()
+            next_ngram = flagged_ngrams[i+1]["ngram"].split()
+            if flagged_ngrams[i]["similar_seed_phrase"] == flagged_ngrams[i+1]["similar_seed_phrase"]:
+                if current_ngram[1:] == next_ngram[:-1]:
+                    if flagged_ngrams[i]["similarity_score"] < flagged_ngrams[i+1]["similarity_score"]:
+                        filtered_flagged.append(flagged_ngrams[i+1])
+                    else:
+                        filtered_flagged.append(flagged_ngrams[i])
+                    i += 2
+                    continue
+        filtered_flagged.append(flagged_ngrams[i])
+        i += 1
+		
+    return filtered_flagged
+
+def risk_category(df):
+	"""Naively categorize the risk level of each post based on the detected risk words."""
+	for i, row in df.iterrows():
+		check_high_risk = False
+		check_moderate_risk = False
+		check_low_risk = True
+		for item in row["risk_words"]:
+			if len(item) == 0:
+				continue
+			if item["similar_seed_phrase"] in ref_phrases:
+				check_high_risk = True
+			elif item["similar_seed_phrase"] in moderate_concern:
+				check_moderate_risk = True
+
+		if check_high_risk:
+			df.at[i, "risk_category"] = "high"
+		else:
+			if check_moderate_risk:
+				df.at[i, "risk_category"] = "moderate"
+			else:
+				if check_low_risk:
+					df.at[i, "risk_category"] = "low"
+	return df
+
+if __name__ == "__main__":
+	ref_link_1 = rf"https://mywellbeing.com/therapy-101/what-depression-feels-like"
+	data_path = rf"D:\humanai_crisis_analysis\data"
+	all_phrases, ref_phrases = get_reference_text(data_path)
+	df = pd.read_csv(rf"{data_path}\reddit_posts.csv")
+	df_with_sa = df_sentiment(df)
+	# df_with_sa.to_csv(rf"D:\humanai_crisis_analysis\data\reddit_data_with_sa.pkl", index=False)
+	test_df = df_with_sa.sample(500)
+	test_df["risk_words"] = test_df["full_text"].progress_apply(
+		lambda x: detect_relevant_ngrams(x, all_phrases, n=5, threshold=0.6))
+	test_df = risk_category(test_df)
+	test_df.to_csv(rf"{data_path}\test_with_risk_words.csv", index=False)
+	
+    # plot by sentiment and risk category: count of sentiment and risk category
+	sentiment_count = test_df.groupby(["s_class"]).size().reset_index(name="sentiment_count")
+	risk_count = test_df.groupby(["risk_category"]).size().reset_index(name="risk_count")
+	
+	fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+	ax1.bar(sentiment_count["s_class"], sentiment_count["sentiment_count"])
+	ax1.set_title("Sentiment Distribution")
+	ax1.set_xlabel("Sentiment")
+	ax1.set_ylabel("Count")
+	
+	ax2.bar(risk_count["risk_category"], risk_count["risk_count"])
+	ax2.set_title("Risk Category Distribution")
+	ax2.set_xlabel("Risk Category")
+	ax2.set_ylabel("Count")
+	
+	plt.savefig(rf"{data_path}\sentiment_risk_distribution.png")
+	plt.show()

@@ -1,0 +1,61 @@
+"""
+Aided using common development resources
+"""
+from typing import Dict, List
+
+from metrics import *
+
+
+def dominates(genome_metrics: Dict[int, Dict[Metric, float]], p: int, q: int) -> bool:
+    """Return True if p dominates q under given objectives."""
+    strictly_better = False
+    for m, pv in genome_metrics[p].items():
+        qv = genome_metrics[q][m]
+        if m.objective == "max":
+            if pv < qv:
+                return False
+            if pv > qv:
+                strictly_better = True
+        else:
+            if pv > qv:
+                return False
+            if pv < qv:
+                strictly_better = True
+    return strictly_better
+
+
+def nondominated_sort(genome_metrics: Dict[int, Dict[Metric, float]]) -> List[List[int]]:
+    """
+    Fast non-dominated sorting.
+    Returns:
+      fronts: List of Pareto fronts, each a list of genome IDs.
+    """
+    dominated_by = {genome_id: [] for genome_id in genome_metrics.keys()}
+    domination_counts = {genome_id: 0 for genome_id in genome_metrics.keys()}
+    fronts: List[List[int]] = [[]]
+
+    for p in genome_metrics.keys():
+        for q in genome_metrics.keys():
+            if p == q:
+                continue
+            if dominates(genome_metrics, p, q):
+                dominated_by[p].append(q)
+            elif dominates(genome_metrics, q, p):
+                domination_counts[p] += 1
+        if domination_counts[p] == 0:
+            fronts[0].append(p)
+
+    # Extract subsequent fronts
+    i = 0
+    while fronts[i]:
+        next_front: List[int] = []
+        for p in fronts[i]:
+            for q in dominated_by[p]:
+                domination_counts[q] -= 1
+                if domination_counts[q] == 0:
+                    next_front.append(q)
+        i += 1
+        fronts.append(next_front)
+
+    # Drop empty last front
+    return fronts[:-1]

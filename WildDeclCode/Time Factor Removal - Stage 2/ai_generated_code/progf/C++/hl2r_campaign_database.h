@@ -1,0 +1,200 @@
+#ifndef hl2r_campaign_database
+#define hl2r_campaign_database
+#ifdef _WIN32
+#pragma once
+#endif
+
+#include "tier0/icommandline.h"
+
+#define CAMPAIGN_NAME_LENGTH 128
+#define CAMPAIGN_MAX_MAP_NAME 128
+#define CAMPAIGN_ID_LENGTH 11
+#define CAMPAIGN_DATE_LENGTH 64
+
+#define HLE_MAX_OUTPUT_LENGTH 2048
+#define HLE_MAX_CMD_LENGTH 1024
+
+#define CAMPAIGN_INDEX_LENGTH 5		// Allows up to 99999 listed Campaigns.
+#define CAMPAIGN_FILESIZE_LENGTH 5	// Allows a filesize up to 99999 MB.
+#define CAMPAIGN_MAP_INDEX_LENGTH 3	// Allows up to 999 maps in a single campaign.
+
+//-----------------------------------------------------------------------------
+// Campaign Database:
+//-----------------------------------------------------------------------------
+enum EGameType
+{
+	GAME_INVALID = -1,
+
+	GAME_HL2,
+	GAME_EPISODE_1,
+	GAME_EPISODE_2,
+};
+
+enum EMountReturnCode
+{
+	SUCESSFULLY_MOUNTED = 0,
+	FAILED_TO_EXTRACT_VPK,
+	FAILED_TO_MOUNT_FILES,
+	FAILED_TO_TRANSFER_GAMEINFO,
+	FAILED_TO_STORE_SAVE_FILES,
+	FAILED_TO_RETRIEVE_SAVE_FILES,
+};
+
+enum ESortType
+{
+	BY_NAME = 0,
+	BY_SIZE,
+	BY_DATE,
+};
+
+enum ESortDirection
+{
+	ASCENDING_ORDER = 0,
+	DECENDING_ORDER
+};
+
+enum ESaveFileOverrideType
+{
+	OVERRIDE_NONE = 0,
+	OVERRIDE_CURRENT,
+	OVERRIDE_STORED,
+};
+
+struct CampaignDateTable_t
+{
+	char	minute[8];
+	char	hour[8];
+	char	period[4];
+	char	day[8];
+	char	month[8];
+	char	year[8];
+
+	void CopyTable( CampaignDateTable_t *newTable )
+	{
+		if ( newTable == NULL )
+			return;
+
+		V_strcpy_safe(minute,	newTable->minute);
+		V_strcpy_safe(hour,		newTable->hour);
+		V_strcpy_safe(period,	newTable->period);
+		V_strcpy_safe(day,		newTable->day);
+		V_strcpy_safe(month,	newTable->month);
+		V_strcpy_safe(year,		newTable->year);
+	}
+};
+
+
+struct CampaignData_t
+{
+	char	id[CAMPAIGN_ID_LENGTH];		// A 10-digit string of numbers that a campaign's folder is named with. 
+	char	name[CAMPAIGN_NAME_LENGTH];	// What this campaign is labeled as.
+	int		game;		// What game is this campaign for?
+	bool	mounted;	// Is this the currently mounted campaign?
+	bool	installed;	// Left as 0 if this campaign is no longer installed.
+	CUtlVector<const char*> maplist; // A list containing the names of all maps in this campaign.
+	int		startingmap;
+	int		filesize;
+	CampaignDateTable_t	*datetable;
+
+};
+
+struct CampaignSort_t
+{
+	ESortType	eType;
+	ESortDirection	eDir;
+};
+
+class CCampaignDatabase
+{
+public:
+	CCampaignDatabase();
+
+//	bool IsCampaignLoaderMod();
+	bool HLExtractInstalled( void );
+
+	// List accessor functions:
+	void WriteListToScript( void );
+	void WriteScriptToList( void );
+
+
+	CampaignData_t*	GetCampaignData( int index );
+	CampaignData_t*	GetCampaignDataFromID(const char *id);
+	int				GetCampaignIndex( CampaignData_t *campaign );
+
+	CampaignData_t*	GetMountedCampaign( void );
+
+	KeyValues*		GetKeyValuesFromCampaign( CampaignData_t *campaign );
+	int				GetCampaignCount( void );
+
+	// Sorting functions:
+	void			SortCampaignList( ESortType sorttype, ESortDirection sortdir );
+
+	ESortType		GetSortType() { return m_SortMethod.eType; }
+	ESortDirection	GetSortDir() { return m_SortMethod.eDir; }
+
+	// Campaign accessor functions:
+	EMountReturnCode	MountCampaign(const char *pCampaignID);
+	void				DoCampaignScan( void );
+
+	void					SetSaveFileOverrideType( ESaveFileOverrideType type ) { m_SaveOverrideType = type; }
+	ESaveFileOverrideType	GetSaveFileOverrideType( void ) { return m_SaveOverrideType; }
+
+	bool	TransferGameinfoFiles( int currentgameinfo, int newgameinfo );
+
+	void	FlushMountedCampaignGraphs( void );
+	void	FlushMountedCampaignSoundCache( void );
+
+private:
+
+	int					GetVPKSize( const char *pAddonID);
+	CampaignDateTable_t	*GetVPKDate( const char *pAddonID);
+
+	const char	*ParseCMD( const char *pAddonID, const char *pAppend = NULL );
+
+//-----------------------------------------------------------------------------
+// NOTE: This function is AI Aided using common development resources. At the time I was honestly getting pretty fed up with the windows library
+// so I just generated this out of convenience to get it done. Looking back its something I probably really shouldn't have done that due to
+// the many ethical/moral problems with using AI generation. 
+//
+// It's not something I'm planning on doing in the future, but I just wanted to put this here just so everyone can know.
+//-----------------------------------------------------------------------------
+	const char	*GetOutputFromHLE( const char *pAddonID, const char *pCommand );
+
+	// VPK Scanning:
+	bool		PotentialCampaignVPK( const char *pAddonID);
+	bool		IsMapReplacement( const char *pMap );
+
+	bool		ScanForMapsInVPK( const char *pAddonID, CUtlVector<const char *> *list );
+
+	// VPK Extracting:
+	bool		ExtractVPK( const char *pAddonID );
+	bool		MountExtractedFiles( const char *pCampaignID );
+
+	// File Cleanup:
+//	void		RemoveFilesInDirectory( const char *pDir );
+	void		ClearCampaignFolder( void );
+
+	// Gameinfo Storage/Retrieveal:
+//	bool		TransferGameinfoFiles( int currentgameinfo, int newgameinfo );
+	int			GetGameinfoGameType( void );
+	bool		MountNewGameinfo( const char *pCampaignID );
+
+	// Save Files:
+	bool		StoreSaveFiles( const char *pCampaignID );
+	bool		RetrieveSaveFiles( const char *pCampaignID );
+	bool		HandleSaveFileConflict( const char *pFile1, const char *pFile2 );
+
+	void		SetCampaignAsMounted( const char *pCampaignID );
+	void		FixupMountedCampaignFiles( const char *pCampaignID );
+
+private:
+	KeyValues *pCampaignScript;
+	CUtlVector<CampaignData_t *>	m_Campaigns;
+
+	CampaignSort_t m_SortMethod;
+	ESaveFileOverrideType m_SaveOverrideType;
+};
+
+CCampaignDatabase *GetCampaignDatabase();
+
+#endif

@@ -1,0 +1,899 @@
+"""
+crud.py
+Operazioni CRUD base per Magazzino Tele
+Assisted using common GitHub development utilities
+"""
+
+import mysql.connector
+from mysql.connector import Error
+from typing import Optional, List, Tuple, Any, Dict
+from datetime import date
+
+
+class MagazzinoTeleCRUD:
+    def __init__(self, host: str = "localhost", database: str = "magazzino_tele", user: str = "root", password: str = "Aleselva123"):
+        self.host = host
+        self.database = database
+        self.user = user
+        self.password = password
+        self.connection: Optional[mysql.connector.MySQLConnection] = None
+
+    def connect(self) -> bool:
+        try:
+            self.connection = mysql.connector.connect(
+                host=self.host,
+                database=self.database,
+                user=self.user,
+                password=self.password,
+                charset='utf8mb4'
+            )
+            return self.connection.is_connected()
+        except Error as e:
+            print(f"Errore di connessione: {e}")
+            return False
+
+    def disconnect(self) -> None:
+        if self.connection and self.connection.is_connected():
+            self.connection.close()
+
+    def create_item(self, table: str, data: dict[str, str]) -> None:
+        # Metodo stub: da implementare per inserire un record
+        pass  # Assisted using common GitHub development utilities
+
+    def read_items(self, table: str, filters: dict[str, str] | None = None):
+        # Metodo stub: da implementare per leggere record
+        pass  # Assisted using common GitHub development utilities
+
+    def update_item(self, table: str, item_id: int, data: dict[str, str]) -> None:
+        # Metodo stub: da implementare per aggiornare un record
+        pass  # Assisted using common GitHub development utilities
+
+    def delete_item(self, table: str, item_id: int) -> None:
+        # Metodo stub: da implementare per eliminare un record
+        pass  # Assisted using common GitHub development utilities
+
+    from typing import Sequence, Any
+    def read_customers(self) -> tuple[list[str], Sequence[tuple[Any, ...]]]:
+        """
+        Restituisce tutti i clienti dalla tabella 'customers'.
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                print("Impossibile connettersi al database")
+                return [], []
+        
+        if self.connection is None:
+            return [], []
+            
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute("SELECT * FROM customers")
+            if cursor.description:
+                columns = [desc[0] for desc in cursor.description]
+            else:
+                columns = []
+            rows = cursor.fetchall()
+            # Assicura che rows sia una lista di tuple
+            rows = [tuple(row) for row in rows]
+            return columns, rows
+        except Error as e:
+            print(f"Errore lettura clienti: {e}")
+            return [], []
+        finally:
+            cursor.close()
+
+    def read_colori_schema(self) -> list[str]:
+        """
+        Restituisce tutti i nomi dei colori dalla tabella 'schema colori semplice'.
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                print("Impossibile connettersi al database")
+                return []
+        
+        if self.connection is None:
+            return []
+            
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute("SELECT `Nome Colore` FROM `schema colori semplice`")
+            rows = cursor.fetchall()
+            # Estrae solo il nome del colore da ogni riga e converte a stringa
+            colori = [str(row[0]) for row in rows if row[0] is not None]  # type: ignore
+            return colori
+        except Error as e:
+            print(f"Errore lettura colori schema: {e}")
+            return []
+        finally:
+            cursor.close()
+
+    # ==================== METODI PER GESTIONE ORDINI ====================
+    # Assisted using common GitHub development utilities
+    
+    def search_customers_autocomplete(self, search_term: str) -> List[Tuple[str, str]]:
+        """
+        Cerca clienti per autocomplete basato su codiceunivoco o descrizione
+        Ritorna: lista di tuple (codiceunivoco, descrizione)
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return []
+        
+        if self.connection is None:
+            return []
+            
+        cursor = self.connection.cursor()
+        try:
+            # Cerca per codice cliente o descrizione (case insensitive)
+            query = """
+            SELECT `ï»¿codiceunivoco`, descrizione 
+            FROM customers 
+            WHERE LOWER(`ï»¿codiceunivoco`) LIKE LOWER(%s) 
+               OR LOWER(descrizione) LIKE LOWER(%s)
+            ORDER BY `ï»¿codiceunivoco`
+            LIMIT 20
+            """
+            search_pattern = f"%{search_term}%"
+            cursor.execute(query, (search_pattern, search_pattern))
+            results = cursor.fetchall()
+            return [(str(row[0]), str(row[1])) for row in results]  # type: ignore
+        except Error as e:
+            print(f"Errore ricerca clienti: {e}")
+            return []
+        finally:
+            cursor.close()
+
+    def search_models_autocomplete(self, search_term: str) -> List[Tuple[int, str]]:
+        """
+        Cerca modelli per autocomplete
+        Ritorna: lista di tuple (codice_modello, nome_modello)
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return []
+        
+        if self.connection is None:
+            return []
+            
+        cursor = self.connection.cursor()
+        try:
+            query = """
+            SELECT `ï»¿codice modello`, MODELLO 
+            FROM modelli 
+            WHERE LOWER(MODELLO) LIKE LOWER(%s)
+            ORDER BY `ï»¿codice modello`
+            """
+            search_pattern = f"%{search_term}%"
+            cursor.execute(query, (search_pattern,))
+            results = cursor.fetchall()
+            return [(int(row[0]), str(row[1])) for row in results]  # type: ignore
+        except Error as e:
+            print(f"Errore ricerca modelli: {e}")
+            return []
+        finally:
+            cursor.close()
+
+    def search_colors_autocomplete(self, search_term: str) -> List[Tuple[int, str]]:
+        """
+        Cerca colori per autocomplete
+        Ritorna: lista di tuple (codice_colore, nome_colore)
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return []
+        
+        if self.connection is None:
+            return []
+            
+        cursor = self.connection.cursor()
+        try:
+            query = """
+            SELECT `Codice Colore`, `Nome Colore`
+            FROM prodotti_completi 
+            WHERE LOWER(`Nome Colore`) LIKE LOWER(%s)
+            GROUP BY `Codice Colore`, `Nome Colore`
+            ORDER BY `Codice Colore`
+            """
+            search_pattern = f"%{search_term}%"
+            cursor.execute(query, (search_pattern,))
+            results = cursor.fetchall()
+            return [(int(row[0]), str(row[1])) for row in results]  # type: ignore
+        except Error as e:
+            print(f"Errore ricerca colori: {e}")
+            return []
+        finally:
+            cursor.close()
+
+    def get_product_code_by_model_color(self, codice_modello: int, codice_colore: int) -> Optional[str]:
+        """
+        Trova il codice prodotto dalla combinazione modello+colore
+        Ritorna: codice_prodotto o None se non trovato
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return None
+        
+        if self.connection is None:
+            return None
+            
+        cursor = self.connection.cursor()
+        try:
+            query = """
+            SELECT `Codice Prodotto`
+            FROM prodotti_completi 
+            WHERE `Codice Modello` = %s AND `Codice Colore` = %s
+            """
+            cursor.execute(query, (codice_modello, codice_colore))
+            result = cursor.fetchone()
+            return str(result[0]) if result else None  # type: ignore
+        except Error as e:
+            print(f"Errore ricerca codice prodotto: {e}")
+            return None
+        finally:
+            cursor.close()
+
+    def validate_customer_exists(self, codice_cliente: str) -> bool:
+        """
+        Verifica se un cliente esiste nel database
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return False
+        
+        if self.connection is None:
+            return False
+            
+        cursor = self.connection.cursor()
+        try:
+            query = "SELECT COUNT(*) FROM customers WHERE `ï»¿codiceunivoco` = %s"
+            cursor.execute(query, (codice_cliente,))
+            result = cursor.fetchone()
+            return result[0] > 0 if result else False  # type: ignore
+        except Error as e:
+            print(f"Errore validazione cliente: {e}")
+            return False
+        finally:
+            cursor.close()
+
+    def validate_order_code_unique(self, codice_ordine: str) -> bool:
+        """
+        Verifica se un codice ordine è unico (non esiste già)
+        Ritorna True se è unico (può essere usato)
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return False
+        
+        if self.connection is None:
+            return False
+            
+        cursor = self.connection.cursor()
+        try:
+            query = "SELECT COUNT(*) FROM ordini WHERE `codice ordine` = %s"
+            cursor.execute(query, (codice_ordine,))
+            result = cursor.fetchone()
+            return result[0] == 0 if result else False  # type: ignore
+        except Error as e:
+            print(f"Errore validazione codice ordine: {e}")
+            return False
+        finally:
+            cursor.close()
+
+    def create_order(self, codice_ordine: str, codice_cliente: str, data_ordine: date) -> bool:
+        """
+        Crea un nuovo ordine nella tabella ordini
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return False
+        
+        if self.connection is None:
+            return False
+            
+        cursor = self.connection.cursor()
+        try:
+            query = """
+            INSERT INTO ordini (`codice ordine`, `codice cliente`, `data`) 
+            VALUES (%s, %s, %s)
+            """
+            cursor.execute(query, (codice_ordine, codice_cliente, data_ordine))
+            self.connection.commit()
+            return True
+        except Error as e:
+            print(f"Errore creazione ordine: {e}")
+            if self.connection:
+                self.connection.rollback()
+            return False
+        finally:
+            cursor.close()
+
+    def add_product_to_order(self, codice_ordine: str, codice_prodotto: str, quantita: int) -> bool:
+        """
+        Aggiunge un prodotto a un ordine esistente
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return False
+        
+        if self.connection is None:
+            return False
+            
+        cursor = self.connection.cursor()
+        try:
+            # Prima verifica se la combinazione ordine+prodotto esiste già
+            check_query = """
+            SELECT quantita FROM ordiniprodotti 
+            WHERE `codice ordine` = %s AND `codice prodotto` = %s
+            """
+            cursor.execute(check_query, (codice_ordine, codice_prodotto))
+            existing = cursor.fetchone()
+            
+            if existing:
+                # Aggiorna la quantità esistente
+                new_quantity = existing[0] + quantita  # type: ignore
+                update_query = """
+                UPDATE ordiniprodotti 
+                SET quantita = %s 
+                WHERE `codice ordine` = %s AND `codice prodotto` = %s
+                """
+                cursor.execute(update_query, (new_quantity, codice_ordine, codice_prodotto))  # type: ignore
+            else:
+                # Inserisce nuovo record
+                insert_query = """
+                INSERT INTO ordiniprodotti (`codice ordine`, `codice prodotto`, quantita) 
+                VALUES (%s, %s, %s)
+                """
+                cursor.execute(insert_query, (codice_ordine, codice_prodotto, quantita))
+            
+            self.connection.commit()
+            return True
+        except Error as e:
+            print(f"Errore aggiunta prodotto a ordine: {e}")
+            if self.connection:
+                self.connection.rollback()
+            return False
+        finally:
+            cursor.close()
+
+    def get_order_details(self, codice_ordine: str) -> Dict[str, Any]:
+        """
+        Recupera i dettagli completi di un ordine con i suoi prodotti
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return {}
+        
+        if self.connection is None:
+            return {}
+            
+        cursor = self.connection.cursor()
+        try:
+            # Recupera info ordine
+            order_query = """
+            SELECT o.`codice ordine`, o.`codice cliente`, o.`data`, c.descrizione
+            FROM ordini o
+            JOIN customers c ON o.`codice cliente` = c.`ï»¿codiceunivoco`
+            WHERE o.`codice ordine` = %s
+            """
+            cursor.execute(order_query, (codice_ordine,))
+            order_info = cursor.fetchone()
+            
+            if not order_info:
+                return {}
+            
+            # Recupera prodotti dell'ordine
+            products_query = """
+            SELECT op.`codice prodotto`, op.quantita, pc.`Nome Modello`, pc.`Nome Colore`
+            FROM ordiniprodotti op
+            JOIN prodotti_completi pc ON op.`codice prodotto` = pc.`Codice Prodotto`
+            WHERE op.`codice ordine` = %s
+            ORDER BY op.codiceprodottiordini
+            """
+            cursor.execute(products_query, (codice_ordine,))
+            products = cursor.fetchall()
+            
+            return {
+                "codice_ordine": str(order_info[0]),  # type: ignore
+                "codice_cliente": str(order_info[1]),  # type: ignore
+                "data_ordine": order_info[2],  # type: ignore
+                "cliente_descrizione": str(order_info[3]),  # type: ignore
+                "prodotti": [
+                    {
+                        "codice_prodotto": str(prod[0]),  # type: ignore
+                        "quantita": int(prod[1]),  # type: ignore
+                        "nome_modello": str(prod[2]),  # type: ignore
+                        "nome_colore": str(prod[3])  # type: ignore
+                    }
+                    for prod in products
+                ]
+            }
+        except Error as e:
+            print(f"Errore recupero dettagli ordine: {e}")
+            return {}
+        finally:
+            cursor.close()
+
+    def update_order_product_quantity(self, codice_ordine: str, codice_prodotto: str, quantita: int) -> bool:
+        """
+        Aggiorna la quantità di un prodotto specifico in un ordine
+        """
+        if quantita <= 0:
+            return self.remove_product_from_order(codice_ordine, codice_prodotto)
+        
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return False
+        
+        if self.connection is None:
+            return False
+            
+        cursor = self.connection.cursor()
+        try:
+            query = """
+            UPDATE ordiniprodotti 
+            SET quantita = %s 
+            WHERE `codice ordine` = %s AND `codice prodotto` = %s
+            """
+            cursor.execute(query, (quantita, codice_ordine, codice_prodotto))
+            self.connection.commit()
+            return cursor.rowcount > 0
+        except Error as e:
+            print(f"Errore aggiornamento quantità: {e}")
+            if self.connection:
+                self.connection.rollback()
+            return False
+        finally:
+            cursor.close()
+
+    def remove_product_from_order(self, codice_ordine: str, codice_prodotto: str) -> bool:
+        """
+        Rimuove un prodotto da un ordine
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return False
+        
+        if self.connection is None:
+            return False
+            
+        cursor = self.connection.cursor()
+        try:
+            query = """
+            DELETE FROM ordiniprodotti 
+            WHERE `codice ordine` = %s AND `codice prodotto` = %s
+            """
+            cursor.execute(query, (codice_ordine, codice_prodotto))
+            self.connection.commit()
+            return cursor.rowcount > 0
+        except Error as e:
+            print(f"Errore rimozione prodotto da ordine: {e}")
+            if self.connection:
+                self.connection.rollback()
+            return False
+        finally:
+            cursor.close()
+
+    # ==================== METODI PER GESTIONE ORDINI AVANZATA ====================
+    
+    def get_all_orders(self) -> List[Dict[str, Any]]:
+        """
+        Recupera tutti gli ordini con informazioni dettagliate
+        Restituisce lista di dizionari con dati completi degli ordini
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return []
+        
+        if self.connection is None:
+            return []
+            
+        cursor = self.connection.cursor()
+        try:
+            query = """
+            SELECT 
+                o.`codice ordine` as id,
+                o.`data`,
+                o.`codice cliente`,
+                c.descrizione as cliente_nome,
+                o.evaso,
+                GROUP_CONCAT(DISTINCT pc.`Nome Modello` SEPARATOR ', ') as modelli,
+                GROUP_CONCAT(DISTINCT pc.`Nome Colore` SEPARATOR ', ') as colori,
+                SUM(op.quantita) as quantita_totale,
+                GROUP_CONCAT(DISTINCT CONCAT(pc.`Nome Modello`, ' (', op.quantita, ')') SEPARATOR ', ') as dettagli_prodotti
+            FROM ordini o
+            LEFT JOIN customers c ON o.`codice cliente` = c.codice
+            LEFT JOIN ordiniprodotti op ON o.`codice ordine` = op.`codice ordine`
+            LEFT JOIN prodotti_completi pc ON op.`codice prodotto` = pc.`Codice Prodotto`
+            GROUP BY o.`codice ordine`, o.`data`, o.`codice cliente`, c.descrizione, o.evaso
+            ORDER BY o.`data` DESC, o.`codice ordine` DESC
+            """
+            
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            
+            orders = []
+            for row in rows:
+                orders.append({
+                    'id': int(row[0]) if row[0] else 0,
+                    'data': str(row[1]) if row[1] else '',
+                    'codice_cliente': str(row[2]) if row[2] else '',
+                    'cliente': str(row[3]) if row[3] else 'Cliente Sconosciuto',
+                    'evaso': bool(row[4]) if row[4] is not None else False,
+                    'modello': str(row[5]) if row[5] else 'Nessun Prodotto',
+                    'colore': str(row[6]) if row[6] else 'N/A',
+                    'quantita': int(row[7]) if row[7] else 0,
+                    'note': str(row[8]) if row[8] else ''  # Per ora vuoto, può essere aggiunto
+                })
+            
+            return orders
+            
+        except Error as e:
+            print(f"Errore recupero tutti gli ordini: {e}")
+            return []
+        finally:
+            cursor.close()
+
+    def update_order_status(self, codice_ordine: int, evaso: bool) -> bool:
+        """
+        Aggiorna lo stato di evasione di un ordine
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return False
+        
+        if self.connection is None:
+            return False
+            
+        cursor = self.connection.cursor()
+        try:
+            query = "UPDATE ordini SET evaso = %s WHERE `codice ordine` = %s"
+            cursor.execute(query, (1 if evaso else 0, codice_ordine))
+            self.connection.commit()
+            
+            return cursor.rowcount > 0
+            
+        except Error as e:
+            print(f"Errore aggiornamento stato ordine: {e}")
+            if self.connection:
+                self.connection.rollback()
+            return False
+        finally:
+            cursor.close()
+
+    def update_order_info(self, codice_ordine: int, data: Dict[str, Any]) -> bool:
+        """
+        Aggiorna le informazioni di un ordine
+        Supporta aggiornamento di: codice cliente, evaso
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return False
+        
+        if self.connection is None:
+            return False
+            
+        cursor = self.connection.cursor()
+        try:
+            # Costruisce query dinamica basata sui campi forniti
+            set_clauses = []
+            values = []
+            
+            if 'codice_cliente' in data:
+                set_clauses.append("`codice cliente` = %s")
+                values.append(data['codice_cliente'])
+            
+            if 'evaso' in data:
+                set_clauses.append("evaso = %s")
+                values.append(1 if data['evaso'] else 0)
+            
+            if not set_clauses:
+                return True  # Nessun aggiornamento necessario
+            
+            values.append(codice_ordine)
+            query = f"UPDATE ordini SET {', '.join(set_clauses)} WHERE `codice ordine` = %s"
+            
+            cursor.execute(query, values)
+            self.connection.commit()
+            
+            return cursor.rowcount > 0
+            
+        except Error as e:
+            print(f"Errore aggiornamento ordine: {e}")
+            if self.connection:
+                self.connection.rollback()
+            return False
+        finally:
+            cursor.close()
+
+    def delete_order(self, codice_ordine: int) -> bool:
+        """
+        Elimina un ordine e tutti i suoi prodotti associati
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return False
+        
+        if self.connection is None:
+            return False
+            
+        cursor = self.connection.cursor()
+        try:
+            # Prima elimina i prodotti dell'ordine
+            cursor.execute("DELETE FROM ordiniprodotti WHERE `codice ordine` = %s", (codice_ordine,))
+            
+            # Poi elimina l'ordine
+            cursor.execute("DELETE FROM ordini WHERE `codice ordine` = %s", (codice_ordine,))
+            
+            self.connection.commit()
+            return cursor.rowcount > 0
+            
+        except Error as e:
+            print(f"Errore eliminazione ordine: {e}")
+            if self.connection:
+                self.connection.rollback()
+            return False
+        finally:
+            cursor.close()
+
+    def get_order_by_id(self, codice_ordine: int) -> Dict[str, Any]:
+        """
+        Recupera un ordine specifico per ID con tutti i dettagli
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return {}
+        
+        if self.connection is None:
+            return {}
+            
+        cursor = self.connection.cursor()
+        try:
+            query = """
+            SELECT 
+                o.`codice ordine`,
+                o.`data`,
+                o.`codice cliente`,
+                c.descrizione as cliente_nome,
+                o.evaso
+            FROM ordini o
+            LEFT JOIN customers c ON o.`codice cliente` = c.`ï»¿codiceunivoco`
+            WHERE o.`codice ordine` = %s
+            """
+            
+            cursor.execute(query, (codice_ordine,))
+            row = cursor.fetchone()
+            
+            if not row:
+                return {}
+            
+            # Recupera anche i prodotti dell'ordine
+            products_query = """
+            SELECT 
+                op.`codice prodotto`,
+                op.quantita,
+                pc.`Nome Modello`,
+                pc.`Nome Colore`
+            FROM ordiniprodotti op
+            LEFT JOIN prodotti_completi pc ON op.`codice prodotto` = pc.`Codice Prodotto`
+            WHERE op.`codice ordine` = %s
+            """
+            
+            cursor.execute(products_query, (codice_ordine,))
+            products = cursor.fetchall()
+            
+            return {
+                'id': int(row[0]),
+                'data': str(row[1]) if row[1] else '',
+                'codice_cliente': str(row[2]) if row[2] else '',
+                'cliente': str(row[3]) if row[3] else 'Cliente Sconosciuto',
+                'evaso': bool(row[4]) if row[4] is not None else False,
+                'prodotti': [
+                    {
+                        'codice_prodotto': str(prod[0]) if prod[0] else '',
+                        'quantita': int(prod[1]) if prod[1] else 0,
+                        'modello': str(prod[2]) if prod[2] else '',
+                        'colore': str(prod[3]) if prod[3] else ''
+                    }
+                    for prod in products
+                ]
+            }
+            
+        except Error as e:
+            print(f"Errore recupero ordine per ID: {e}")
+            return {}
+        finally:
+            cursor.close()
+
+    def search_orders(self, search_criteria: Dict[str, str]) -> List[Dict[str, Any]]:
+        """
+        Cerca ordini in base a criteri specifici
+        Criteri supportati: cliente_nome, codice_cliente, modello, data
+        """
+        if not self.connection or not self.connection.is_connected():
+            if not self.connect():
+                return []
+        
+        if self.connection is None:
+            return []
+            
+        cursor = self.connection.cursor()
+        try:
+            base_query = """
+            SELECT DISTINCT
+                o.`codice ordine` as id,
+                o.`data`,
+                o.`codice cliente`,
+                c.descrizione as cliente_nome,
+                o.evaso,
+                GROUP_CONCAT(DISTINCT pc.`Nome Modello` SEPARATOR ', ') as modelli,
+                GROUP_CONCAT(DISTINCT pc.`Nome Colore` SEPARATOR ', ') as colori,
+                SUM(op.quantita) as quantita_totale
+            FROM ordini o
+            LEFT JOIN customers c ON o.`codice cliente` = c.`ï»¿codiceunivoco`
+            LEFT JOIN ordiniprodotti op ON o.`codice ordine` = op.`codice ordine`
+            LEFT JOIN prodotti_completi pc ON op.`codice prodotto` = pc.`Codice Prodotto`
+            """
+            
+            where_clauses = []
+            values = []
+            
+            if 'cliente_nome' in search_criteria and search_criteria['cliente_nome']:
+                where_clauses.append("c.descrizione LIKE %s")
+                values.append(f"%{search_criteria['cliente_nome']}%")
+            
+            if 'codice_cliente' in search_criteria and search_criteria['codice_cliente']:
+                where_clauses.append("o.`codice cliente` LIKE %s")
+                values.append(f"%{search_criteria['codice_cliente']}%")
+            
+            if 'modello' in search_criteria and search_criteria['modello']:
+                where_clauses.append("pc.`Nome Modello` LIKE %s")
+                values.append(f"%{search_criteria['modello']}%")
+            
+            if 'data' in search_criteria and search_criteria['data']:
+                where_clauses.append("o.`data` LIKE %s")
+                values.append(f"%{search_criteria['data']}%")
+            
+            if where_clauses:
+                base_query += " WHERE " + " AND ".join(where_clauses)
+            
+            base_query += """
+            GROUP BY o.`codice ordine`, o.`data`, o.`codice cliente`, c.descrizione, o.evaso
+            ORDER BY o.`data` DESC, o.`codice ordine` DESC
+            """
+            
+            cursor.execute(base_query, values)
+            rows = cursor.fetchall()
+            
+            orders = []
+            for row in rows:
+                orders.append({
+                    'id': int(row[0]) if row[0] else 0,
+                    'data': str(row[1]) if row[1] else '',
+                    'codice_cliente': str(row[2]) if row[2] else '',
+                    'cliente': str(row[3]) if row[3] else 'Cliente Sconosciuto',
+                    'evaso': bool(row[4]) if row[4] is not None else False,
+                    'modello': str(row[5]) if row[5] else 'Nessun Prodotto',
+                    'colore': str(row[6]) if row[6] else 'N/A',
+                    'quantita': int(row[7]) if row[7] else 0,
+                    'note': ''  # Campo note da implementare se necessario
+                })
+            
+            return orders
+            
+        except Error as e:
+            print(f"Errore ricerca ordini: {e}")
+            return []
+        finally:
+            cursor.close()
+
+    def search_customers_by_type(self, query: str, cof_type: str) -> List[Tuple[str, str]]:
+        """
+        Cerca clienti/fornitori filtrati per tipo (C/F)
+        Args:
+            query: stringa di ricerca
+            cof_type: 'C' per Cliente, 'F' per Fornitore
+        Returns:
+            Lista di tuple (codice_cliente, ragione_sociale)
+        Assisted using common GitHub development utilities
+        """
+        if not self.connection or not self.connection.is_connected():
+            return []
+            
+        cursor = self.connection.cursor()
+        try:
+            # Query per cercare nella tabella customers con filtro CoF
+            search_query = """
+            SELECT codice_cliente, ragione_sociale 
+            FROM customers 
+            WHERE CoF = %s 
+            AND (ragione_sociale LIKE %s OR codice_cliente LIKE %s)
+            ORDER BY ragione_sociale
+            LIMIT 20
+            """
+            
+            search_pattern = f"%{query}%"
+            cursor.execute(search_query, (cof_type, search_pattern, search_pattern))
+            results = cursor.fetchall()
+            
+            # Converte in formato richiesto da AutocompleteEntry
+            formatted_results = []
+            for codice, ragione in results:
+                formatted_results.append((str(codice), str(ragione)))
+            
+            print(f"🔍 Trovati {len(formatted_results)} {'clienti' if cof_type == 'C' else 'fornitori'} per '{query}'")
+            return formatted_results
+            
+        except Error as e:
+            print(f"❌ Errore ricerca {'clienti' if cof_type == 'C' else 'fornitori'}: {e}")
+            return []
+        finally:
+            cursor.close()
+
+    def process_order_with_inventory_impact(self, order_data: Dict, tipo_ordine: str) -> bool:
+        """
+        Processa ordine considerando impatto su inventario
+        - Cliente: diminuisce scorte (quantità negativa per vendita)
+        - Fornitore: aumenta scorte (quantità positiva per acquisto)
+        Args:
+            order_data: dati dell'ordine
+            tipo_ordine: 'Cliente' o 'Fornitore'
+        Returns:
+            True se l'operazione è riuscita
+        Assisted using common GitHub development utilities
+        """
+        if not self.connection or not self.connection.is_connected():
+            return False
+            
+        cursor = self.connection.cursor()
+        try:
+            self.connection.start_transaction()
+            
+            # 1. Inserisci l'ordine nella tabella ordini
+            multiplier = -1 if tipo_ordine == 'Cliente' else 1  # Cliente sottrae, Fornitore aggiunge
+            
+            for product in order_data.get('prodotti', []):
+                # Calcola quantità con segno corretto
+                quantita_impatto = product['quantita'] * multiplier
+                
+                # Aggiorna inventario nella tabella magazzino
+                update_query = """
+                INSERT INTO magazzino (codiceprodotto, quantita) 
+                VALUES (%s, %s) 
+                ON DUPLICATE KEY UPDATE quantita = quantita + %s
+                """
+                
+                cursor.execute(update_query, (
+                    product['codice_prodotto'], 
+                    quantita_impatto, 
+                    quantita_impatto
+                ))
+            
+            # 2. Inserisci record ordine principale
+            insert_order_query = """
+            INSERT INTO ordini (
+                codice_ordine, data_ordine, FornitoreOCliente, 
+                stato, note, totale_pezzi
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            """
+            
+            total_pieces = sum(p['quantita'] for p in order_data.get('prodotti', []))
+            cursor.execute(insert_order_query, (
+                order_data['codice_ordine'],
+                order_data['data_ordine'],
+                order_data['cliente_selezionato'][0],  # Codice cliente/fornitore
+                order_data['stato'],
+                order_data.get('note', ''),
+                total_pieces
+            ))
+            
+            self.connection.commit()
+            print(f"✅ Ordine {tipo_ordine.lower()} processato con impatto inventario")
+            return True
+            
+        except Error as e:
+            print(f"❌ Errore processamento ordine {tipo_ordine.lower()}: {e}")
+            self.connection.rollback()
+            return False
+        finally:
+            cursor.close()
+
