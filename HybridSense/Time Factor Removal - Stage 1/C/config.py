@@ -13,7 +13,7 @@ DATA_PATHS = {
 OUTPUT_PATHS = {
     'features_dir': r"./data/processed/features_c_23",
     'models_dir': r"./data/processed/models_c_23",
-    'results_dir': r"./results_C_23"
+    'results_dir': r"./results_C（HML+DSE）"
 }
 
 # ========== 特征提取模块开关 ==========

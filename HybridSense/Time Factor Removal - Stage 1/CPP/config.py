@@ -13,7 +13,7 @@ DATA_PATHS = {
 OUTPUT_PATHS = {
     'features_dir': r"./data/processed/features_cpp_3",
     'models_dir': r"./data/processed/models_cpp_3",
-    'results_dir': r"./results_cpp_3"
+    'results_dir': r"./results_cpp（DSE）"
 }
 
 # ========== 特征提取模块开关 ==========

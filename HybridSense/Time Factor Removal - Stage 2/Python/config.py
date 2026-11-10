@@ -11,7 +11,7 @@ DATA_PATHS = {
 OUTPUT_PATHS = {
     'features_dir': "data/processed/features_python_1",
     'models_dir': "data/processed/models_python_1",
-    'results_dir': "results_python_1",
+    'results_dir': "results_python（LSF）",
 }
 
 FEATURES = {

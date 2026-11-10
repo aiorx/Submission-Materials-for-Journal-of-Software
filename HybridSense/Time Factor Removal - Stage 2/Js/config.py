@@ -11,7 +11,7 @@ DATA_PATHS = {
 OUTPUT_PATHS = {
     'features_dir': "data/processed/features_js_3",
     'models_dir': "data/processed/models_js_3",
-    'results_dir': "results_js_3",
+    'results_dir': "results_js（DSE）",
 }
 
 FEATURES = {
