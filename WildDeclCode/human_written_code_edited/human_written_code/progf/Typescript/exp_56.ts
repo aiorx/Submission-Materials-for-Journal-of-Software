@@ -1,4 +1,0 @@
-export enum ANGULAR_UNIVERSAL_DEPLOYMENT_TYPE {
-  PRERENDERING = 'prerendering',
-  SERVER_SIDE_RENDERING = 'ssr'
-}

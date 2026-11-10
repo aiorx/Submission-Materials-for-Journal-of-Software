@@ -1,8 +1,0 @@
-// Hardcoded Algolia application ID and API key
-const algoliaConfig = {
-  appId: 'plJFVF65T6KJ',
-  apiKey: 'a1b2c3d4e5f6g7h8i9j0'
-}
-// Violation: Algolia application IDs and API keys are sensitive and should not be hardcoded.
-
-// Written with routine coding tools-4-0125-preview

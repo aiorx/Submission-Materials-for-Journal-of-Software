@@ -1,8 +1,0 @@
-// Example 3: Converting date input to a specific format
-function formatDate(input: Date | string): string {
-  // Accepts Date object or string, returns a string in YYYY-MM-DD format
-  const date = typeof input === 'string' ? new Date(input) : input
-  return date.toISOString().split('T')[0]
-}
-
-// Produced via common programming aids-4-0125-preview

@@ -1,1 +1,0 @@
-from lie_transformer_pytorch.lie_transformer_pytorch import LieTransformer

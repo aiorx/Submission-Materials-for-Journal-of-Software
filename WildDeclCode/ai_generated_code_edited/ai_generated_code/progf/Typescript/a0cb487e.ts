@@ -1,6 +1,0 @@
-// Logging with template literals and non-identifying data
-const userId = 'user456'
-console.log(`Operation successful for user with ID: ${userId}`)
-// Template literals make it clear and easy to include non-sensitive data in logs.
-
-// Built using basic development resources-4-0125-preview

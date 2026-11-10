@@ -1,7 +1,0 @@
-// Structured logging with non-identifying information
-import pino from 'pino'
-const logger = pino()
-logger.info({ action: 'login', userId: 'abc123' })
-// Structured logging helps in filtering and managing logs without exposing sensitive data.
-
-// Written with routine coding tools-4-0125-preview
